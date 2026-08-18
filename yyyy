@@ -1,0 +1,644 @@
+--[[
+    Auto Collect Rune Drop - by xin
+    Game: Mine a Mountain (MAMO) / Roblox Drop Collector
+    
+    Fitur:
+      - Auto deteksi dan collect semua Rune yang jatuh di tanah (Dropped Runes)
+      - Batasan jarak (Max Studs radius di sekitar karakter)
+      - Instant Pickup (Bypass Hold Duration) menggunakan fireproximityprompt
+      - Filter Rarity Rune (Umum, Uncommon, Rare, Legendaris, Mythic, Secret)
+      - GUI Modern & Responsive (Draggable, Minimize, Live Stats, Log)
+]]
+
+-- ============================================================
+--  SERVICES & LOCAL PLAYER
+-- ============================================================
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local TweenService      = game:GetService("TweenService")
+local Workspace         = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- ============================================================
+--  CONFIG
+-- ============================================================
+local Config = {
+    Running         = false,
+    MaxStuds        = 35,       -- Batasan jarak dari karakter (studs)
+    CollectDelay    = 0.08,     -- Jeda antar pickup (detik)
+    InstantHold     = true,     -- Langsung ambil tanpa menunggu durasi hold
+    AutoTeleport    = false,    -- Teleport langsung ke rune (opsional, default: false)
+    SortByDistance  = true,     -- Ambil yang paling dekat dulu
+    
+    -- Filter Rarity (true = diambil, false = dilewati)
+    EnabledRarities = {
+        ["UMUM"]        = true,
+        ["UNCOMMON"]    = true,
+        ["RARE"]        = true,
+        ["LEGENDARIS"]  = true,
+        ["MYTHIC"]      = true,
+        ["SECRET"]      = true,
+    }
+}
+
+-- Counter & State
+local Stats = {
+    TotalCollected = 0,
+    LastCollected  = "-",
+    StatusText     = "IDLE (Siap)",
+}
+
+-- ============================================================
+--  HELPER FUNCTIONS
+-- ============================================================
+
+-- Dapatkan Posisi Karakter
+local function getCharacterPosition()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    local hrp = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+    return hrp and hrp.Position
+end
+
+-- Deteksi apakah sebuah prompt / instance adalah Rune
+local function isRunePrompt(prompt)
+    if not prompt or not prompt:IsA("ProximityPrompt") then return false end
+    
+    local parent = prompt.Parent
+    if not parent then return false end
+
+    local pName = parent.Name:lower()
+    local pObjText = prompt.ObjectText:lower()
+    local pActText = prompt.ActionText:lower()
+
+    -- Cek kata kunci Rune atau Pickup/Ambil
+    local hasRuneWord = pName:find("rune") or pObjText:find("rune") or parent:GetAttribute("RuneName") or parent:GetAttribute("RuneId")
+    local hasActionWord = pActText:find("ambil") or pActText:find("pickup") or pActText:find("collect") or pActText:find("take")
+
+    -- Cek jika di parent atau anak terdapat BillboardGui bertuliskan "Rune"
+    if not hasRuneWord then
+        for _, desc in ipairs(parent:GetChildren()) do
+            if desc:IsA("BillboardGui") then
+                for _, textLabel in ipairs(desc:GetDescendants()) do
+                    if textLabel:IsA("TextLabel") and textLabel.Text:lower():find("rune") then
+                        hasRuneWord = true
+                        break
+                    end
+                end
+            end
+            if hasRuneWord then break end
+        end
+    end
+
+    return hasRuneWord or (hasActionWord and (pName:find("drop") or pName:find("crystal") or pObjText:find("rune")))
+end
+
+-- Dapatkan Nama dan Rarity dari Rune
+local function getRuneInfo(prompt)
+    local parent = prompt.Parent
+    local name = prompt.ObjectText ~= "" and prompt.ObjectText or parent.Name
+    local rarity = "UMUM"
+
+    -- Deteksi dari BillboardGui jika ada
+    if parent then
+        for _, desc in ipairs(parent:GetChildren()) do
+            if desc:IsA("BillboardGui") then
+                for _, lbl in ipairs(desc:GetDescendants()) do
+                    if lbl:IsA("TextLabel") then
+                        local t = lbl.Text:upper()
+                        if t:find("MYTHIC") then rarity = "MYTHIC"
+                        elseif t:find("LEGENDARIS") or t:find("LEGENDARY") then rarity = "LEGENDARIS"
+                        elseif t:find("RARE") then rarity = "RARE"
+                        elseif t:find("UNCOMMON") then rarity = "UNCOMMON"
+                        elseif t:find("UMUM") or t:find("COMMON") then rarity = "UMUM"
+                        elseif t:find("SECRET") then rarity = "SECRET"
+                        end
+                        if lbl.Text ~= "" and not name:find("Rune") and lbl.Text:find("Rune") then
+                            name = lbl.Text
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Fallback cek dari teks nama
+    local uname = name:upper()
+    if uname:find("MYTHIC") then rarity = "MYTHIC"
+    elseif uname:find("LEGENDARIS") or uname:find("LEGENDARY") then rarity = "LEGENDARIS"
+    elseif uname:find("RARE") then rarity = "RARE"
+    elseif uname:find("UNCOMMON") then rarity = "UNCOMMON"
+    elseif uname:find("UMUM") or uname:find("COMMON") then rarity = "UMUM"
+    end
+
+    return name, rarity
+end
+
+-- Eksekusi trigger ProximityPrompt
+local function triggerPrompt(prompt)
+    if not prompt or not prompt.Parent then return false end
+    
+    if Config.InstantHold then
+        prompt.HoldDuration = 0
+    end
+
+    -- 1. Gunakan fireproximityprompt jika executor mendukung
+    if typeof(fireproximityprompt) == "function" then
+        pcall(function()
+            fireproximityprompt(prompt, 0)
+        end)
+        return true
+    end
+
+    -- 2. Fallback input hold simulasi
+    local success = pcall(function()
+        prompt:InputHoldBegin()
+        if prompt.HoldDuration > 0 and not Config.InstantHold then
+            task.wait(prompt.HoldDuration)
+        else
+            task.wait(0.02)
+        end
+        prompt:InputHoldEnd()
+    end)
+
+    return success
+end
+
+-- Cari semua dropped runes dalam radius karakter
+local function getNearbyRunes()
+    local charPos = getCharacterPosition()
+    if not charPos then return {} end
+
+    local foundRunes = {}
+
+    -- Scan semua ProximityPrompt di workspace
+    for _, prompt in ipairs(Workspace:GetDescendants()) do
+        if prompt:IsA("ProximityPrompt") and prompt.Enabled and isRunePrompt(prompt) then
+            local part = prompt.Parent
+            local pos = nil
+            if part:IsA("BasePart") then
+                pos = part.Position
+            elseif part:IsA("Model") and part.PrimaryPart then
+                pos = part.PrimaryPart.Position
+            elseif part:IsA("Attachment") then
+                pos = part.WorldPosition
+            elseif part:IsA("Model") then
+                local firstPart = part:FindFirstChildWhichIsA("BasePart", true)
+                if firstPart then pos = firstPart.Position end
+            end
+
+            if pos then
+                local dist = (charPos - pos).Magnitude
+                if dist <= Config.MaxStuds then
+                    local name, rarity = getRuneInfo(prompt)
+                    if Config.EnabledRarities[rarity] ~= false then
+                        table.insert(foundRunes, {
+                            Prompt   = prompt,
+                            Position = pos,
+                            Distance = dist,
+                            Name     = name,
+                            Rarity   = rarity,
+                        })
+                    end
+                end
+            end
+        end
+    end
+
+    -- Sortir berdasarkan jarak terdekat
+    if Config.SortByDistance then
+        table.sort(foundRunes, function(a, b)
+            return a.Distance < b.Distance
+        end)
+    end
+
+    return foundRunes
+end
+
+-- ============================================================
+--  MAIN COLLECTION CYCLE
+-- ============================================================
+local isCollecting = false
+
+local function collectRunesCycle()
+    if isCollecting or not Config.Running then return end
+    isCollecting = true
+
+    local runes = getNearbyRunes()
+    if #runes > 0 then
+        Stats.StatusText = ("Mengambil %d Rune di sekitar..."):format(#runes)
+        for _, runeData in ipairs(runes) do
+            if not Config.Running then break end
+            
+            -- Re-check jarak (jika karakter bergerak)
+            local myPos = getCharacterPosition()
+            if myPos and runeData.Prompt and runeData.Prompt.Parent then
+                local curDist = (myPos - runeData.Position).Magnitude
+                if curDist <= Config.MaxStuds then
+                    -- Teleport opsional jika diaktifkan
+                    if Config.AutoTeleport and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                        LocalPlayer.Character.HumanoidRootPart.CFrame = CFrame.new(runeData.Position + Vector3.new(0, 2, 0))
+                        task.wait(0.04)
+                    end
+
+                    -- Trigger ambil
+                    local ok = triggerPrompt(runeData.Prompt)
+                    if ok then
+                        Stats.TotalCollected = Stats.TotalCollected + 1
+                        Stats.LastCollected = runeData.Name
+                        _G.RuneCollectLogs = _G.RuneCollectLogs or {}
+                        table.insert(_G.RuneCollectLogs, 1, string.format("[+%s] %s (%.1fm)", runeData.Rarity, runeData.Name, curDist))
+                        if #_G.RuneCollectLogs > 60 then table.remove(_G.RuneCollectLogs) end
+                    end
+
+                    if Config.CollectDelay > 0 then
+                        task.wait(Config.CollectDelay)
+                    end
+                end
+            end
+        end
+    else
+        Stats.StatusText = "Menunggu Crystal di sekitar (" .. tostring(Config.MaxStuds) .. " studs)..."
+    end
+
+    isCollecting = false
+end
+
+-- Loop runner
+local loopThread = nil
+local function startLoop()
+    if loopThread then return end
+    loopThread = task.spawn(function()
+        while Config.Running do
+            pcall(collectRunesCycle)
+            task.wait(Config.CollectDelay > 0 and Config.CollectDelay or 0.1)
+        end
+        loopThread = nil
+        Stats.StatusText = "IDLE (Dihentikan)"
+    end)
+end
+
+local function stopLoop()
+    Config.Running = false
+    Stats.StatusText = "IDLE (Dihentikan)"
+end
+
+-- ============================================================
+--  GUI CREATION ( THEME)
+-- ============================================================
+do
+    local oldGui = LocalPlayer.PlayerGui:FindFirstChild("CROTTT_AutoRuneGUI")
+    if oldGui then oldGui:Destroy() end
+end
+
+_G.RuneCollectLogs = _G.RuneCollectLogs or {}
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "CROTTT_AutoRuneGUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = LocalPlayer.PlayerGui
+
+local C = {
+    BG     = Color3.fromRGB(15, 15, 24),
+    PANEL  = Color3.fromRGB(22, 22, 35),
+    CARD   = Color3.fromRGB(30, 30, 48),
+    ACCENT = Color3.fromRGB(168, 85, 247),  -- Ungu Rune
+    ACC2   = Color3.fromRGB(59, 130, 246),
+    GREEN  = Color3.fromRGB(34, 197, 94),
+    RED    = Color3.fromRGB(239, 68, 68),
+    ORANGE = Color3.fromRGB(249, 115, 22),
+    TEXT   = Color3.fromRGB(243, 244, 246),
+    MUTED  = Color3.fromRGB(156, 163, 175),
+    BORDER = Color3.fromRGB(55, 65, 81),
+    SEL    = Color3.fromRGB(126, 34, 206),
+}
+
+local function mkCorner(p, r) local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 8); c.Parent = p end
+local function mkStroke(p, col, t) local s = Instance.new("UIStroke"); s.Color = col or C.BORDER; s.Thickness = t or 1; s.Parent = p end
+local function mkLbl(p, txt, sz, bold, col, xal)
+    local L = Instance.new("TextLabel")
+    L.BackgroundTransparency = 1; L.Text = txt; L.TextSize = sz or 12
+    L.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+    L.TextColor3 = col or C.TEXT
+    L.TextXAlignment = xal or Enum.TextXAlignment.Left
+    L.AutomaticSize = Enum.AutomaticSize.XY; L.Parent = p
+    return L
+end
+
+-- Main Window
+local Main = Instance.new("Frame")
+Main.Name = "MainFrame"
+Main.Size = UDim2.new(0, 380, 0, 520)
+Main.Position = UDim2.new(0, 30, 0.5, -260)
+Main.BackgroundColor3 = C.BG
+Main.BorderSizePixel = 0
+Main.Active = true
+Main.Draggable = true
+Main.Parent = ScreenGui
+mkCorner(Main, 12)
+mkStroke(Main, C.BORDER, 1)
+
+-- Title Bar
+local TBar = Instance.new("Frame")
+TBar.Size = UDim2.new(1, 0, 0, 48)
+TBar.BackgroundColor3 = C.PANEL
+TBar.BorderSizePixel = 0
+TBar.Parent = Main
+mkCorner(TBar, 12)
+
+local tGrad = Instance.new("UIGradient")
+tGrad.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, C.ACCENT), ColorSequenceKeypoint.new(1, C.ACC2) })
+tGrad.Rotation = 90
+tGrad.Parent = TBar
+
+local tLbl = mkLbl(TBar, "✨ Auto Collect Crystal", 15, true, Color3.new(1, 1, 1))
+tLbl.Position = UDim2.new(0, 14, 0, 0)
+tLbl.Size = UDim2.new(1, -100, 1, 0)
+tLbl.AutomaticSize = Enum.AutomaticSize.None
+tLbl.TextYAlignment = Enum.TextYAlignment.Center
+
+local vLbl = mkLbl(TBar, "CROTTT HUB", 11, false, Color3.fromRGB(216, 180, 254))
+vLbl.AnchorPoint = Vector2.new(1, 0.5)
+vLbl.Position = UDim2.new(1, -44, 0.5, 0)
+vLbl.AutomaticSize = Enum.AutomaticSize.None
+vLbl.Size = UDim2.new(0, 70, 1, 0)
+vLbl.TextXAlignment = Enum.TextXAlignment.Right
+
+-- Minimize Button
+local minBtn = Instance.new("TextButton")
+minBtn.Size = UDim2.new(0, 26, 0, 26)
+minBtn.Position = UDim2.new(1, -34, 0, 11)
+minBtn.BackgroundColor3 = C.CARD
+minBtn.BorderSizePixel = 0
+minBtn.Text = "−"
+minBtn.Font = Enum.Font.GothamBold
+minBtn.TextSize = 14
+minBtn.TextColor3 = C.TEXT
+minBtn.Parent = Main
+mkCorner(minBtn, 6)
+
+-- Body Scroll Frame
+local Scroll = Instance.new("ScrollingFrame")
+Scroll.Name = "Body"
+Scroll.Size = UDim2.new(1, -12, 1, -56)
+Scroll.Position = UDim2.new(0, 6, 0, 52)
+Scroll.BackgroundTransparency = 1
+Scroll.ScrollBarThickness = 3
+Scroll.ScrollBarImageColor3 = C.ACCENT
+Scroll.BorderSizePixel = 0
+Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+Scroll.Parent = Main
+
+local sLayout = Instance.new("UIListLayout")
+sLayout.Padding = UDim.new(0, 8)
+sLayout.SortOrder = Enum.SortOrder.LayoutOrder
+sLayout.Parent = Scroll
+
+local sPad = Instance.new("UIPadding")
+sPad.PaddingTop = UDim.new(0, 4)
+sPad.PaddingLeft = UDim.new(0, 6)
+sPad.PaddingRight = UDim.new(0, 6)
+sPad.PaddingBottom = UDim.new(0, 8)
+sPad.Parent = Scroll
+
+-- 1. START / STOP BUTTON
+local startBtn = Instance.new("TextButton")
+startBtn.Size = UDim2.new(1, 0, 0, 42)
+startBtn.BackgroundColor3 = C.GREEN
+startBtn.BorderSizePixel = 0
+startBtn.Text = "START AUTO COLLECT"
+startBtn.Font = Enum.Font.GothamBold
+startBtn.TextSize = 14
+startBtn.TextColor3 = Color3.new(1, 1, 1)
+startBtn.LayoutOrder = 1
+startBtn.Parent = Scroll
+mkCorner(startBtn, 8)
+
+startBtn.MouseButton1Click:Connect(function()
+    Config.Running = not Config.Running
+    if Config.Running then
+        startBtn.Text = "STOP AUTO COLLECT"
+        startBtn.BackgroundColor3 = C.RED
+        startLoop()
+    else
+        startBtn.Text = "START AUTO COLLECT"
+        startBtn.BackgroundColor3 = C.GREEN
+        stopLoop()
+    end
+end)
+
+-- 2. STATUS & LIVE STATS CARD
+local statCard = Instance.new("Frame")
+statCard.BackgroundColor3 = C.CARD
+statCard.Size = UDim2.new(1, 0, 0, 54)
+statCard.LayoutOrder = 2
+statCard.Parent = Scroll
+mkCorner(statCard, 8)
+mkStroke(statCard, C.BORDER, 1)
+
+local statPad = Instance.new("UIPadding")
+statPad.PaddingLeft = UDim.new(0, 10); statPad.PaddingRight = UDim.new(0, 10); statPad.PaddingTop = UDim.new(0, 6); statPad.Parent = statCard
+
+local statusLbl = mkLbl(statCard, "Status: IDLE (Siap)", 11, false, C.MUTED)
+statusLbl.Size = UDim2.new(1, 0, 0, 18); statusLbl.AutomaticSize = Enum.AutomaticSize.None
+
+local countLbl = mkLbl(statCard, "Terkumpul: 0 Crystal  |  Terakhir: -", 11, true, C.ACCENT)
+countLbl.Position = UDim2.new(0, 0, 0, 22)
+countLbl.Size = UDim2.new(1, 0, 0, 18); countLbl.AutomaticSize = Enum.AutomaticSize.None
+
+RunService.Heartbeat:Connect(function()
+    statusLbl.Text = "Status: " .. Stats.StatusText
+    statusLbl.TextColor3 = Config.Running and C.GREEN or C.MUTED
+    countLbl.Text = string.format("Terkumpul: %d Rune  |  Terakhir: %s", Stats.TotalCollected, Stats.LastCollected)
+end)
+
+-- 3. RADIUS / STUDS SETTINGS
+local radSection = Instance.new("Frame")
+radSection.BackgroundColor3 = C.CARD
+radSection.Size = UDim2.new(1, 0, 0, 75)
+radSection.LayoutOrder = 3
+radSection.Parent = Scroll
+mkCorner(radSection, 8)
+mkStroke(radSection, C.BORDER, 1)
+
+local radPad = Instance.new("UIPadding")
+radPad.PaddingLeft = UDim.new(0, 10); radPad.PaddingRight = UDim.new(0, 10); radPad.PaddingTop = UDim.new(0, 6); radPad.Parent = radSection
+
+local radTitle = mkLbl(radSection, "Batasan Radius: " .. Config.MaxStuds .. " Studs", 12, true, C.TEXT)
+radTitle.Size = UDim2.new(1, 0, 0, 18); radTitle.AutomaticSize = Enum.AutomaticSize.None
+
+local radBtnRow = Instance.new("Frame")
+radBtnRow.BackgroundTransparency = 1
+radBtnRow.Position = UDim2.new(0, 0, 0, 28)
+radBtnRow.Size = UDim2.new(1, 0, 0, 32)
+radBtnRow.Parent = radSection
+
+local rList = Instance.new("UIListLayout")
+rList.FillDirection = Enum.FillDirection.Horizontal
+rList.Padding = UDim.new(0, 6)
+rList.Parent = radBtnRow
+
+local radiusPresets = { 15, 35, 60, 100, 200 }
+for _, rVal in ipairs(radiusPresets) do
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(0.2, -5, 1, 0)
+    b.BackgroundColor3 = Config.MaxStuds == rVal and C.SEL or C.PANEL
+    b.Text = tostring(rVal) .. "s"
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 11
+    b.TextColor3 = Config.MaxStuds == rVal and C.TEXT or C.MUTED
+    b.Parent = radBtnRow
+    mkCorner(b, 6)
+    mkStroke(b, Config.MaxStuds == rVal and C.ACCENT or C.BORDER, 1)
+
+    b.MouseButton1Click:Connect(function()
+        Config.MaxStuds = rVal
+        radTitle.Text = "Batasan Radius: " .. Config.MaxStuds .. " Studs"
+        for _, sibling in ipairs(radBtnRow:GetChildren()) do
+            if sibling:IsA("TextButton") then
+                local isCur = (sibling.Text == tostring(rVal) .. "s")
+                sibling.BackgroundColor3 = isCur and C.SEL or C.PANEL
+                sibling.TextColor3 = isCur and C.TEXT or C.MUTED
+                local st = sibling:FindFirstChildOfClass("UIStroke")
+                if st then st.Color = isCur and C.ACCENT or C.BORDER end
+            end
+        end
+    end)
+end
+
+-- 4. RARITY FILTER
+local rarSection = Instance.new("Frame")
+rarSection.BackgroundColor3 = C.CARD
+rarSection.Size = UDim2.new(1, 0, 0, 95)
+rarSection.LayoutOrder = 4
+rarSection.Parent = Scroll
+mkCorner(rarSection, 8)
+mkStroke(rarSection, C.BORDER, 1)
+
+local rarPad = Instance.new("UIPadding")
+rarPad.PaddingLeft = UDim.new(0, 10); rarPad.PaddingRight = UDim.new(0, 10); rarPad.PaddingTop = UDim.new(0, 6); rarPad.Parent = rarSection
+
+local rarTitle = mkLbl(rarSection, "Filter Rarity Rune", 12, true, C.TEXT)
+rarTitle.Size = UDim2.new(1, 0, 0, 18); rarTitle.AutomaticSize = Enum.AutomaticSize.None
+
+local rarGrid = Instance.new("Frame")
+rarGrid.BackgroundTransparency = 1
+rarGrid.Position = UDim2.new(0, 0, 0, 26)
+rarGrid.Size = UDim2.new(1, 0, 0, 60)
+rarGrid.Parent = rarSection
+
+local rGLay = Instance.new("UIGridLayout")
+rGLay.CellSize = UDim2.new(0.333, -4, 0, 26)
+rGLay.CellPadding = UDim2.new(0, 4, 0, 4)
+rGLay.Parent = rarGrid
+
+local rarities = {
+    { id = "UMUM",       col = Color3.fromRGB(156, 163, 175) },
+    { id = "UNCOMMON",   col = Color3.fromRGB(74, 222, 128)  },
+    { id = "RARE",       col = Color3.fromRGB(96, 165, 250)  },
+    { id = "LEGENDARIS", col = Color3.fromRGB(251, 146, 60)  },
+    { id = "MYTHIC",     col = Color3.fromRGB(248, 113, 113) },
+    { id = "SECRET",     col = Color3.fromRGB(192, 132, 252) },
+}
+
+for _, rItem in ipairs(rarities) do
+    local rBtn = Instance.new("TextButton")
+    rBtn.BackgroundColor3 = Config.EnabledRarities[rItem.id] and C.SEL or C.PANEL
+    rBtn.Text = rItem.id
+    rBtn.Font = Enum.Font.GothamBold
+    rBtn.TextSize = 10
+    rBtn.TextColor3 = Config.EnabledRarities[rItem.id] and rItem.col or C.MUTED
+    rBtn.Parent = rarGrid
+    mkCorner(rBtn, 6)
+    mkStroke(rBtn, Config.EnabledRarities[rItem.id] and rItem.col or C.BORDER, 1)
+
+    rBtn.MouseButton1Click:Connect(function()
+        Config.EnabledRarities[rItem.id] = not Config.EnabledRarities[rItem.id]
+        local isCur = Config.EnabledRarities[rItem.id]
+        rBtn.BackgroundColor3 = isCur and C.SEL or C.PANEL
+        rBtn.TextColor3 = isCur and rItem.col or C.MUTED
+        local st = rBtn:FindFirstChildOfClass("UIStroke")
+        if st then st.Color = isCur and rItem.col or C.BORDER end
+    end)
+end
+
+-- 5. ACTIVITY LOG
+local logSection = Instance.new("Frame")
+logSection.BackgroundColor3 = C.CARD
+logSection.Size = UDim2.new(1, 0, 0, 110)
+logSection.LayoutOrder = 5
+logSection.Parent = Scroll
+mkCorner(logSection, 8)
+mkStroke(logSection, C.BORDER, 1)
+
+local logPad = Instance.new("UIPadding")
+logPad.PaddingLeft = UDim.new(0, 8); logPad.PaddingRight = UDim.new(0, 8); logPad.PaddingTop = UDim.new(0, 6); logPad.PaddingBottom = UDim.new(0, 6)
+logPad.Parent = logSection
+
+local logTitle = mkLbl(logSection, "Activity Log (Terbaru)", 11, true, C.MUTED)
+logTitle.Size = UDim2.new(1, 0, 0, 16); logTitle.AutomaticSize = Enum.AutomaticSize.None
+
+local logScroll = Instance.new("ScrollingFrame")
+logScroll.Position = UDim2.new(0, 0, 0, 20)
+logScroll.Size = UDim2.new(1, 0, 1, -20)
+logScroll.BackgroundTransparency = 1
+logScroll.ScrollBarThickness = 2
+logScroll.BorderSizePixel = 0
+logScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+logScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+logScroll.Parent = logSection
+
+local logList = Instance.new("UIListLayout")
+logList.Padding = UDim.new(0, 2)
+logList.SortOrder = Enum.SortOrder.LayoutOrder
+logList.Parent = logScroll
+
+local logLabels = {}
+RunService.Heartbeat:Connect(function()
+    local logs = _G.RuneCollectLogs or {}
+    for i = 1, 6 do
+        if not logLabels[i] then
+            local lbl = Instance.new("TextLabel")
+            lbl.BackgroundTransparency = 1
+            lbl.Size = UDim2.new(1, 0, 0, 13)
+            lbl.Font = Enum.Font.Code
+            lbl.TextSize = 10
+            lbl.TextColor3 = C.MUTED
+            lbl.TextXAlignment = Enum.TextXAlignment.Left
+            lbl.TextTruncate = Enum.TextTruncate.AtEnd
+            lbl.LayoutOrder = i
+            lbl.Parent = logScroll
+            logLabels[i] = lbl
+        end
+        logLabels[i].Text = logs[i] or ""
+        if logs[i] and logs[i]:find("MYTHIC") then
+            logLabels[i].TextColor3 = Color3.fromRGB(248, 113, 113)
+        elseif logs[i] and (logs[i]:find("LEGENDARIS") or logs[i]:find("LEGENDARY")) then
+            logLabels[i].TextColor3 = Color3.fromRGB(251, 146, 60)
+        elseif logs[i] and logs[i]:find("RARE") then
+            logLabels[i].TextColor3 = Color3.fromRGB(96, 165, 250)
+        else
+            logLabels[i].TextColor3 = C.MUTED
+        end
+    end
+end)
+
+-- Minimize Logic
+local isMin = false
+minBtn.MouseButton1Click:Connect(function()
+    isMin = not isMin
+    if isMin then
+        TweenService:Create(Main, TweenInfo.new(0.2), { Size = UDim2.new(0, 380, 0, 48) }):Play()
+        Scroll.Visible = false
+        minBtn.Text = "+"
+    else
+        Scroll.Visible = true
+        TweenService:Create(Main, TweenInfo.new(0.2), { Size = UDim2.new(0, 380, 0, 520) }):Play()
+        minBtn.Text = "−"
+    end
+end)
+
+print("[AHH CROTT - Auto Collect Rune] Berhasil dimuat!")
