@@ -1,0 +1,700 @@
+
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local TweenService      = game:GetService("TweenService")
+local Workspace         = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local StarterGui        = game:GetService("StarterGui")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- ============================================================
+--  CONFIG & STATE
+-- ============================================================
+local DropConfig = {
+    Running         = false,
+    DropDelay       = 0.01,     -- Jeda antar drop (detik)
+    
+    -- Limit Pengaturan Drop
+    LimitEnabled    = true,    -- Batasi jumlah drop
+    LimitAmount     = 1,      -- Maksimal crystal yang di-drop
+
+    -- Daftar Item yang Dipilih (key: "RARITY::NAME" = true/false)
+    SelectedItems   = {},
+}
+
+local DropStats = {
+    TotalDropped    = 0,
+    SessionDropped  = 0,
+    LastDropped     = "-",
+    StatusText      = "IDLE (Siap)",
+}
+
+local TierMap = {
+    [1] = "COMMON",    [2] = "UNCOMMON", [3] = "RARE",
+    [4] = "EPIC",      [5] = "LEGENDARY",[6] = "MYTHIC",
+    [7] = "EMPYREAN",  [8] = "PULSAR",   [9] = "QUASAR",
+}
+
+local RarityColors = {
+    ["COMMON"]      = Color3.fromRGB(220, 195, 140),
+    ["UNCOMMON"]    = Color3.fromRGB(110, 190, 240),
+    ["RARE"]        = Color3.fromRGB(80, 240, 220),
+    ["EPIC"]        = Color3.fromRGB(170, 100, 255),
+    ["LEGENDARY"]   = Color3.fromRGB(255, 80, 180),
+    ["MYTHIC"]      = Color3.fromRGB(190, 70, 255),
+    ["EMPYREAN"]    = Color3.fromRGB(255, 215, 0),
+    ["PULSAR"]      = Color3.fromRGB(90, 210, 255),
+    ["QUASAR"]      = Color3.fromRGB(255, 90, 220),
+    ["SECRET"]      = Color3.fromRGB(244, 63, 94),
+    ["OTHER"]       = Color3.fromRGB(156, 163, 175),
+}
+
+local RarityOrder = {
+    ["QUASAR"] = 1, ["PULSAR"] = 2, ["EMPYREAN"] = 3,
+    ["MYTHIC"] = 4, ["LEGENDARY"] = 5, ["EPIC"] = 6,
+    ["RARE"] = 7, ["UNCOMMON"] = 8, ["COMMON"] = 9,
+    ["SECRET"] = 0, ["OTHER"] = 10
+}
+
+-- ============================================================
+--  REMOTE HELPER
+-- ============================================================
+local function getDropRemote()
+    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+    return remotes and remotes:FindFirstChild("CrystalDropRequest")
+end
+
+-- ============================================================
+--  BACKPACK INSPECTOR & SCANNER
+-- ============================================================
+local function getItemInfo(itm)
+    local name = itm.Name
+    local rarity = "COMMON"
+
+    local attrName = itm:GetAttribute("CrystalName") or itm:GetAttribute("DisplayName") or itm:GetAttribute("RuneName")
+    if attrName and tostring(attrName) ~= "" then name = tostring(attrName) end
+
+    local attrTier = itm:GetAttribute("Tier")
+    if attrTier and TierMap[tonumber(attrTier)] then rarity = TierMap[tonumber(attrTier)] end
+
+    local attrRarity = itm:GetAttribute("Rarity") or itm:GetAttribute("TierName")
+    if attrRarity and RarityColors[tostring(attrRarity):upper()] then
+        rarity = tostring(attrRarity):upper()
+    end
+
+    if rarity == "COMMON" then
+        local uname = name:upper()
+        if uname:find("QUASAR") then rarity = "QUASAR"
+        elseif uname:find("PULSAR") then rarity = "PULSAR"
+        elseif uname:find("EMPYREAN") then rarity = "EMPYREAN"
+        elseif uname:find("MYTHIC") then rarity = "MYTHIC"
+        elseif uname:find("LEGENDARY") or uname:find("LEGENDARIS") then rarity = "LEGENDARY"
+        elseif uname:find("EPIC") then rarity = "EPIC"
+        elseif uname:find("RARE") then rarity = "RARE"
+        elseif uname:find("UNCOMMON") then rarity = "UNCOMMON"
+        elseif uname:find("SECRET") or uname:find("BLOOD") then rarity = "SECRET" end
+    end
+
+    return name, rarity
+end
+
+local function scanBackpack()
+    local inv = {
+        Total = 0,
+        ByRarity = {
+            ["QUASAR"] = 0, ["PULSAR"] = 0, ["EMPYREAN"] = 0,
+            ["MYTHIC"] = 0, ["LEGENDARY"] = 0, ["EPIC"] = 0,
+            ["RARE"] = 0, ["UNCOMMON"] = 0, ["COMMON"] = 0,
+            ["SECRET"] = 0, ["OTHER"] = 0
+        },
+        ByItem = {},
+        List = {}
+    }
+
+    local items = {}
+    local bp = LocalPlayer:FindFirstChild("Backpack")
+    if bp then for _, itm in ipairs(bp:GetChildren()) do table.insert(items, itm) end end
+
+    local char = LocalPlayer.Character
+    if char then
+        for _, itm in ipairs(char:GetChildren()) do
+            if itm:IsA("Tool") then table.insert(items, itm) end
+        end
+    end
+
+    for _, itm in ipairs(items) do
+        local name, rarity = getItemInfo(itm)
+        inv.Total = inv.Total + 1
+        inv.ByRarity[rarity] = (inv.ByRarity[rarity] or 0) + 1
+
+        local key = rarity .. "::" .. name
+        if not inv.ByItem[key] then
+            inv.ByItem[key] = { Rarity = rarity, Name = name, Count = 0, Key = key }
+        end
+        inv.ByItem[key].Count = inv.ByItem[key].Count + 1
+    end
+
+    for _, data in pairs(inv.ByItem) do table.insert(inv.List, data) end
+
+    table.sort(inv.List, function(a, b)
+        local orderA = RarityOrder[a.Rarity] or 99
+        local orderB = RarityOrder[b.Rarity] or 99
+        if orderA ~= orderB then return orderA < orderB end
+        if a.Count ~= b.Count then return a.Count > b.Count end
+        return a.Name < b.Name
+    end)
+
+    return inv
+end
+
+-- ============================================================
+--  MAIN DROP LOOP
+-- ============================================================
+local startDropBtnRef = nil
+local dropThread = nil
+
+local function stopDropLoop()
+    DropConfig.Running = false
+    DropStats.StatusText = "IDLE (Dihentikan)"
+    if startDropBtnRef then
+        startDropBtnRef.Text = "START AUTO DROP"
+        startDropBtnRef.BackgroundColor3 = Color3.fromRGB(34, 197, 94) -- Hijau
+    end
+end
+
+local function startDropLoop()
+    if DropConfig.Running then return end
+    DropConfig.Running = true
+    DropStats.SessionDropped = 0
+    DropStats.StatusText = "DROPPING..."
+
+    if startDropBtnRef then
+        startDropBtnRef.Text = "STOP AUTO DROP"
+        startDropBtnRef.BackgroundColor3 = Color3.fromRGB(239, 68, 68) -- Merah
+    end
+
+    dropThread = task.spawn(function()
+        local dropRemote = getDropRemote()
+
+        while DropConfig.Running do
+            -- Cek Limit
+            if DropConfig.LimitEnabled and DropStats.SessionDropped >= DropConfig.LimitAmount then
+                stopDropLoop()
+                DropStats.StatusText = string.format("LIMIT TERCAPAI (%d/%d)", DropStats.SessionDropped, DropConfig.LimitAmount)
+                pcall(function()
+                    StarterGui:SetCore("SendNotification", {
+                        Title = "Auto Drop Selesai!",
+                        Text = string.format("Limit drop %d Crystal telah tercapai!", DropConfig.LimitAmount),
+                        Duration = 4
+                    })
+                end)
+                break
+            end
+
+            local targetTools = {}
+            local bp = LocalPlayer:FindFirstChild("Backpack")
+            if bp then
+                for _, itm in ipairs(bp:GetChildren()) do table.insert(targetTools, itm) end
+            end
+            local char = LocalPlayer.Character
+            if char then
+                for _, itm in ipairs(char:GetChildren()) do
+                    if itm:IsA("Tool") then table.insert(targetTools, itm) end
+                end
+            end
+
+            local itemsToDrop = {}
+            for _, itm in ipairs(targetTools) do
+                local name, rarity = getItemInfo(itm)
+                local key = rarity .. "::" .. name
+
+                if DropConfig.SelectedItems[key] == true then
+                    table.insert(itemsToDrop, { Item = itm, Name = name, Rarity = rarity })
+                end
+            end
+
+            if #itemsToDrop == 0 then
+                DropStats.StatusText = "IDLE (Tidak ada crystal yang dicentang)"
+                task.wait(0.4)
+            else
+                for _, dropData in ipairs(itemsToDrop) do
+                    if not DropConfig.Running then break end
+                    if DropConfig.LimitEnabled and DropStats.SessionDropped >= DropConfig.LimitAmount then
+                        break
+                    end
+
+                    local itm = dropData.Item
+                    if itm and itm.Parent then
+                        local dropped = false
+
+                        -- 1. Fire Remote
+                        if dropRemote then
+                            pcall(function() dropRemote:FireServer(dropData.Name) end)
+                            pcall(function() dropRemote:FireServer(itm.Name) end)
+                            dropped = true
+                        end
+
+                        -- 2. Fallback Equip & Drop
+                        if itm.Parent == bp and LocalPlayer.Character then
+                            local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+                            if hum then
+                                hum:EquipTool(itm)
+                                task.wait(0.01)
+                                if itm.Parent == LocalPlayer.Character then
+                                    itm.Parent = Workspace
+                                    dropped = true
+                                end
+                            end
+                        end
+
+                        if dropped then
+                            DropStats.TotalDropped = DropStats.TotalDropped + 1
+                            DropStats.SessionDropped = DropStats.SessionDropped + 1
+                            DropStats.LastDropped = dropData.Name
+                        end
+
+                        if DropConfig.DropDelay > 0 then
+                            task.wait(DropConfig.DropDelay)
+                        end
+                    end
+                end
+            end
+
+            task.wait(DropConfig.DropDelay > 0 and DropConfig.DropDelay or 0.04)
+        end
+
+        dropThread = nil
+    end)
+end
+
+-- ============================================================
+--  GUI CREATION
+-- ============================================================
+do
+    local oldGui = LocalPlayer.PlayerGui:FindFirstChild("CROTTT_AutoDropGUI")
+    if oldGui then oldGui:Destroy() end
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "CROTTT_AutoDropGUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = LocalPlayer.PlayerGui
+
+local C = {
+    BG     = Color3.fromRGB(16, 14, 20),
+    PANEL  = Color3.fromRGB(24, 20, 30),
+    CARD   = Color3.fromRGB(32, 26, 40),
+    ACCENT = Color3.fromRGB(168, 85, 247),
+    ACC2   = Color3.fromRGB(236, 72, 153),
+    GREEN  = Color3.fromRGB(34, 197, 94),
+    RED    = Color3.fromRGB(239, 68, 68),
+    TEXT   = Color3.fromRGB(243, 244, 246),
+    MUTED  = Color3.fromRGB(156, 163, 175),
+    BORDER = Color3.fromRGB(55, 48, 70),
+    SEL    = Color3.fromRGB(126, 34, 206),
+}
+
+local function mkCorner(p, r) local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 8); c.Parent = p end
+local function mkStroke(p, col, t) local s = Instance.new("UIStroke"); s.Color = col or C.BORDER; s.Thickness = t or 1; s.Parent = p end
+local function mkLbl(p, txt, sz, bold, col, xal)
+    local L = Instance.new("TextLabel")
+    L.BackgroundTransparency = 1; L.Text = txt; L.TextSize = sz or 12
+    L.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+    L.TextColor3 = col or C.TEXT
+    L.TextXAlignment = xal or Enum.TextXAlignment.Left
+    L.AutomaticSize = Enum.AutomaticSize.XY; L.Parent = p
+    return L
+end
+
+-- Main Window
+local Main = Instance.new("Frame")
+Main.Name = "MainFrame"
+Main.Size = UDim2.new(0, 400, 0, 480)
+Main.Position = UDim2.new(0, 30, 0.5, -240)
+Main.BackgroundColor3 = C.BG
+Main.BorderSizePixel = 0
+Main.Active = true
+Main.Draggable = true
+Main.Parent = ScreenGui
+mkCorner(Main, 12)
+mkStroke(Main, C.BORDER, 1)
+
+-- Title Bar
+local TBar = Instance.new("Frame")
+TBar.Size = UDim2.new(1, 0, 0, 44)
+TBar.BackgroundColor3 = C.PANEL
+TBar.BorderSizePixel = 0
+TBar.Parent = Main
+mkCorner(TBar, 12)
+
+local tGrad = Instance.new("UIGradient")
+tGrad.Color = ColorSequence.new({ 
+    ColorSequenceKeypoint.new(0, C.ACCENT), 
+    ColorSequenceKeypoint.new(1, C.ACC2) 
+})
+tGrad.Rotation = 45
+tGrad.Parent = TBar
+
+local tLbl = mkLbl(TBar, "🗑️ Auto Drop", 13, true, Color3.new(1, 1, 1))
+tLbl.Position = UDim2.new(0, 14, 0, 0)
+tLbl.Size = UDim2.new(1, -90, 1, 0)
+tLbl.AutomaticSize = Enum.AutomaticSize.None
+tLbl.TextYAlignment = Enum.TextYAlignment.Center
+
+-- Minimize Button
+local minBtn = Instance.new("TextButton")
+minBtn.Size = UDim2.new(0, 26, 0, 26)
+minBtn.Position = UDim2.new(1, -34, 0, 9)
+minBtn.BackgroundColor3 = C.CARD
+minBtn.BorderSizePixel = 0
+minBtn.Text = "−"
+minBtn.Font = Enum.Font.GothamBold
+minBtn.TextSize = 14
+minBtn.TextColor3 = C.TEXT
+minBtn.Parent = Main
+mkCorner(minBtn, 6)
+
+-- Main Body Frame
+local Body = Instance.new("Frame")
+Body.Name = "Body"
+Body.Size = UDim2.new(1, -16, 1, -54)
+Body.Position = UDim2.new(0, 8, 0, 48)
+Body.BackgroundTransparency = 1
+Body.Parent = Main
+
+local bLayout = Instance.new("UIListLayout")
+bLayout.Padding = UDim.new(0, 7)
+bLayout.SortOrder = Enum.SortOrder.LayoutOrder
+bLayout.Parent = Body
+
+-- 1. START / STOP BUTTON (HIJAU -> MERAH)
+local startDropBtn = Instance.new("TextButton")
+startDropBtn.Size = UDim2.new(1, 0, 0, 38)
+startDropBtn.BackgroundColor3 = C.GREEN -- Default: HIJAU
+startDropBtn.BorderSizePixel = 0
+startDropBtn.Text = "START AUTO DROP"
+startDropBtn.Font = Enum.Font.GothamBold
+startDropBtn.TextSize = 13
+startDropBtn.TextColor3 = Color3.new(1, 1, 1)
+startDropBtn.LayoutOrder = 1
+startDropBtn.Parent = Body
+mkCorner(startDropBtn, 8)
+startDropBtnRef = startDropBtn
+
+startDropBtn.MouseButton1Click:Connect(function()
+    if DropConfig.Running then
+        stopDropLoop()
+    else
+        startDropLoop()
+    end
+end)
+
+-- 2. STATUS CARD
+local statCard = Instance.new("Frame")
+statCard.BackgroundColor3 = C.CARD
+statCard.Size = UDim2.new(1, 0, 0, 48)
+statCard.LayoutOrder = 2
+statCard.Parent = Body
+mkCorner(statCard, 8); mkStroke(statCard, C.BORDER, 1)
+
+local statPad = Instance.new("UIPadding")
+statPad.PaddingLeft = UDim.new(0, 10); statPad.PaddingRight = UDim.new(0, 10); statPad.PaddingTop = UDim.new(0, 5); statPad.Parent = statCard
+
+local statusLbl = mkLbl(statCard, "Status: IDLE (Siap)", 11, false, C.MUTED)
+statusLbl.Size = UDim2.new(1, 0, 0, 16); statusLbl.AutomaticSize = Enum.AutomaticSize.None
+
+local countLbl = mkLbl(statCard, "Di-drop: 0  |  Terakhir: -", 11, true, C.ACCENT)
+countLbl.Position = UDim2.new(0, 0, 0, 20)
+countLbl.Size = UDim2.new(1, 0, 0, 18); countLbl.AutomaticSize = Enum.AutomaticSize.None
+
+RunService.Heartbeat:Connect(function()
+    statusLbl.Text = "Status: " .. DropStats.StatusText
+    statusLbl.TextColor3 = DropConfig.Running and C.GREEN or C.MUTED
+    if DropConfig.LimitEnabled then
+        countLbl.Text = string.format("Di-drop: %d / %d  |  Terakhir: %s", DropStats.SessionDropped, DropConfig.LimitAmount, DropStats.LastDropped)
+    else
+        countLbl.Text = string.format("Total Di-drop: %d Crystal  |  Terakhir: %s", DropStats.TotalDropped, DropStats.LastDropped)
+    end
+end)
+
+-- 3. LIMIT DROP SETTINGS
+local limitSection = Instance.new("Frame")
+limitSection.BackgroundColor3 = C.CARD
+limitSection.Size = UDim2.new(1, 0, 0, 64)
+limitSection.LayoutOrder = 3
+limitSection.Parent = Body
+mkCorner(limitSection, 8); mkStroke(limitSection, C.BORDER, 1)
+
+local limPad = Instance.new("UIPadding")
+limPad.PaddingLeft = UDim.new(0, 10); limPad.PaddingRight = UDim.new(0, 10); limPad.PaddingTop = UDim.new(0, 6); limPad.Parent = limitSection
+
+local limHeaderRow = Instance.new("Frame")
+limHeaderRow.BackgroundTransparency = 1; limHeaderRow.Size = UDim2.new(1, 0, 0, 20); limHeaderRow.Parent = limitSection
+
+local limTitle = mkLbl(limHeaderRow, "🎯 Max Drop Limit", 11, true, C.TEXT)
+limTitle.Size = UDim2.new(1, -85, 1, 0); limTitle.AutomaticSize = Enum.AutomaticSize.None
+
+local limitToggleBtn = Instance.new("TextButton")
+limitToggleBtn.Size = UDim2.new(0, 78, 1, 0); limitToggleBtn.Position = UDim2.new(1, -78, 0, 0)
+limitToggleBtn.BackgroundColor3 = DropConfig.LimitEnabled and C.GREEN or C.PANEL
+limitToggleBtn.Text = DropConfig.LimitEnabled and "LIMIT: ON" or "LIMIT: OFF"
+limitToggleBtn.Font = Enum.Font.GothamBold; limitToggleBtn.TextSize = 10; limitToggleBtn.TextColor3 = Color3.new(1, 1, 1)
+limitToggleBtn.Parent = limHeaderRow
+mkCorner(limitToggleBtn, 5); mkStroke(limitToggleBtn, C.BORDER, 1)
+
+local limBtnRow = Instance.new("Frame")
+limBtnRow.BackgroundTransparency = 1; limBtnRow.Position = UDim2.new(0, 0, 0, 26); limBtnRow.Size = UDim2.new(1, 0, 0, 24); limBtnRow.Parent = limitSection
+local limLayout = Instance.new("UIListLayout"); limLayout.FillDirection = Enum.FillDirection.Horizontal; limLayout.Padding = UDim.new(0, 4); limLayout.Parent = limBtnRow
+
+local limitInputBox = Instance.new("TextBox")
+
+local function refreshLimitBtns()
+    limitToggleBtn.BackgroundColor3 = DropConfig.LimitEnabled and C.GREEN or C.PANEL
+    limitToggleBtn.Text = DropConfig.LimitEnabled and "LIMIT: ON" or "LIMIT: OFF"
+    for _, ch in ipairs(limBtnRow:GetChildren()) do
+        if ch:IsA("TextButton") then
+            local isCur = (ch.Text == tostring(DropConfig.LimitAmount))
+            ch.BackgroundColor3 = isCur and C.SEL or C.PANEL
+            ch.TextColor3 = isCur and C.TEXT or C.MUTED
+            local st = ch:FindFirstChildOfClass("UIStroke")
+            if st then st.Color = isCur and C.ACCENT or C.BORDER end
+        end
+    end
+end
+
+limitToggleBtn.MouseButton1Click:Connect(function()
+    DropConfig.LimitEnabled = not DropConfig.LimitEnabled
+    refreshLimitBtns()
+end)
+
+for _, limVal in ipairs({ 25, 50, 100, 200 }) do
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(0.2, -4, 1, 0); b.BackgroundColor3 = DropConfig.LimitAmount == limVal and C.SEL or C.PANEL
+    b.Text = tostring(limVal); b.Font = Enum.Font.GothamBold; b.TextSize = 10
+    b.TextColor3 = DropConfig.LimitAmount == limVal and C.TEXT or C.MUTED; b.Parent = limBtnRow
+    mkCorner(b, 5); mkStroke(b, DropConfig.LimitAmount == limVal and C.ACCENT or C.BORDER, 1)
+
+    b.MouseButton1Click:Connect(function()
+        DropConfig.LimitAmount = limVal
+        limitInputBox.Text = tostring(limVal)
+        refreshLimitBtns()
+    end)
+end
+
+limitInputBox.Size = UDim2.new(0.2, -4, 1, 0)
+limitInputBox.BackgroundColor3 = C.PANEL
+limitInputBox.PlaceholderText = "Custom"
+limitInputBox.PlaceholderColor3 = C.MUTED
+limitInputBox.Text = tostring(DropConfig.LimitAmount)
+limitInputBox.Font = Enum.Font.GothamBold; limitInputBox.TextSize = 10; limitInputBox.TextColor3 = C.TEXT
+limitInputBox.ClearTextOnFocus = false; limitInputBox.Parent = limBtnRow
+mkCorner(limitInputBox, 5); mkStroke(limitInputBox, C.BORDER, 1)
+
+limitInputBox:GetPropertyChangedSignal("Text"):Connect(function()
+    local n = tonumber(limitInputBox.Text)
+    if n and n > 0 then
+        DropConfig.LimitAmount = math.floor(n)
+        refreshLimitBtns()
+    end
+end)
+
+-- 4. BACKPACK SCANNER & ITEM SELECTOR (FULL ROW CLICKABLE)
+local bpSection = Instance.new("Frame")
+bpSection.BackgroundColor3 = C.CARD
+bpSection.Size = UDim2.new(1, 0, 1, -170)
+bpSection.LayoutOrder = 4
+bpSection.Parent = Body
+mkCorner(bpSection, 8); mkStroke(bpSection, C.BORDER, 1)
+
+local bpPad = Instance.new("UIPadding")
+bpPad.PaddingLeft = UDim.new(0, 10); bpPad.PaddingRight = UDim.new(0, 10); bpPad.PaddingTop = UDim.new(0, 6); bpPad.PaddingBottom = UDim.new(0, 6); bpPad.Parent = bpSection
+
+local bpHeader = Instance.new("Frame")
+bpHeader.BackgroundTransparency = 1; bpHeader.Size = UDim2.new(1, 0, 0, 20); bpHeader.Parent = bpSection
+
+local bpTitle = mkLbl(bpHeader, "🎒 Klik Baris Crystal untuk Di-drop", 11, true, C.TEXT)
+bpTitle.Size = UDim2.new(1, -70, 1, 0); bpTitle.AutomaticSize = Enum.AutomaticSize.None
+
+local refreshBpBtn = Instance.new("TextButton")
+refreshBpBtn.Size = UDim2.new(0, 65, 1, 0); refreshBpBtn.Position = UDim2.new(1, -65, 0, 0)
+refreshBpBtn.BackgroundColor3 = C.PANEL; refreshBpBtn.Text = "🔄 Refresh"; refreshBpBtn.Font = Enum.Font.GothamBold; refreshBpBtn.TextSize = 10
+refreshBpBtn.TextColor3 = C.ACCENT; refreshBpBtn.Parent = bpHeader
+mkCorner(refreshBpBtn, 5); mkStroke(refreshBpBtn, C.BORDER, 1)
+
+-- Quick Select Buttons Row
+local qSelectRow = Instance.new("Frame")
+qSelectRow.BackgroundTransparency = 1; qSelectRow.Position = UDim2.new(0, 0, 0, 24); qSelectRow.Size = UDim2.new(1, 0, 0, 22); qSelectRow.Parent = bpSection
+local qList = Instance.new("UIListLayout"); qList.FillDirection = Enum.FillDirection.Horizontal; qList.Padding = UDim.new(0, 4); qList.Parent = qSelectRow
+
+local function mkQBtn(txt, callback)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(0.25, -3, 1, 0); b.BackgroundColor3 = C.PANEL
+    b.Text = txt; b.Font = Enum.Font.GothamBold; b.TextSize = 9; b.TextColor3 = C.TEXT; b.Parent = qSelectRow
+    mkCorner(b, 5); mkStroke(b, C.BORDER, 1)
+    b.MouseButton1Click:Connect(callback)
+end
+
+-- Item List Scroll Area
+local itemListScroll = Instance.new("ScrollingFrame")
+itemListScroll.Position = UDim2.new(0, 0, 0, 52); itemListScroll.Size = UDim2.new(1, 0, 1, -54)
+itemListScroll.BackgroundTransparency = 1; itemListScroll.ScrollBarThickness = 3; itemListScroll.ScrollBarImageColor3 = C.ACCENT; itemListScroll.BorderSizePixel = 0
+itemListScroll.CanvasSize = UDim2.new(0, 0, 0, 0); itemListScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y; itemListScroll.Parent = bpSection
+
+local itmListLay = Instance.new("UIListLayout")
+itmListLay.Padding = UDim.new(0, 4); itmListLay.SortOrder = Enum.SortOrder.LayoutOrder; itmListLay.Parent = itemListScroll
+
+local function renderItemList()
+    local inv = scanBackpack()
+
+    for _, ch in ipairs(itemListScroll:GetChildren()) do
+        if ch:IsA("GuiObject") then ch:Destroy() end
+    end
+
+    local count = 0
+    for i, itmData in ipairs(inv.List) do
+        count = count + 1
+        local isSel = (DropConfig.SelectedItems[itmData.Key] == true)
+
+        -- Baris interaktif (Bisa diklik seluruhnya)
+        local rowBtn = Instance.new("TextButton")
+        rowBtn.Size = UDim2.new(1, 0, 0, 28)
+        rowBtn.BackgroundColor3 = isSel and C.SEL or C.PANEL
+        rowBtn.AutoButtonColor = false
+        rowBtn.Text = ""
+        rowBtn.LayoutOrder = i
+        rowBtn.Parent = itemListScroll
+        mkCorner(rowBtn, 5)
+        mkStroke(rowBtn, isSel and C.ACCENT or C.BORDER, isSel and 1.2 or 1)
+
+        -- Rarity Badge
+        local rBadge = Instance.new("Frame")
+        rBadge.Size = UDim2.new(0, 68, 1, -6)
+        rBadge.Position = UDim2.new(0, 3, 0, 3)
+        rBadge.BackgroundColor3 = C.CARD
+        rBadge.Parent = rowBtn
+        mkCorner(rBadge, 4)
+
+        local rBadgeLbl = mkLbl(rBadge, itmData.Rarity, 8, true, RarityColors[itmData.Rarity] or C.TEXT, Enum.TextXAlignment.Center)
+        rBadgeLbl.Size = UDim2.new(1, 0, 1, 0)
+        rBadgeLbl.AutomaticSize = Enum.AutomaticSize.None
+
+        -- Nama Crystal
+        local nameLbl = mkLbl(rowBtn, itmData.Name, 11, isSel, isSel and Color3.new(1, 1, 1) or C.TEXT)
+        nameLbl.Position = UDim2.new(0, 76, 0, 0)
+        nameLbl.Size = UDim2.new(1, -160, 1, 0)
+        nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
+        nameLbl.AutomaticSize = Enum.AutomaticSize.None
+
+        -- Jumlah di Tas
+        local countLblRow = mkLbl(rowBtn, "x" .. tostring(itmData.Count), 10, true, isSel and Color3.fromRGB(134, 239, 172) or Color3.fromRGB(74, 222, 128), Enum.TextXAlignment.Right)
+        countLblRow.Position = UDim2.new(1, -85, 0, 0)
+        countLblRow.Size = UDim2.new(0, 36, 1, 0)
+        countLblRow.AutomaticSize = Enum.AutomaticSize.None
+
+        -- Badge DROP / SKIP
+        local checkBtn = Instance.new("TextButton")
+        checkBtn.Size = UDim2.new(0, 42, 1, -6)
+        checkBtn.Position = UDim2.new(1, -46, 0, 3)
+        checkBtn.BackgroundColor3 = isSel and C.ACCENT or C.CARD
+        checkBtn.Text = isSel and "DROP" or "SKIP"
+        checkBtn.Font = Enum.Font.GothamBold
+        checkBtn.TextSize = 9
+        checkBtn.TextColor3 = isSel and Color3.new(1, 1, 1) or C.MUTED
+        checkBtn.Parent = rowBtn
+        mkCorner(checkBtn, 4)
+
+        local function toggleSelection()
+            DropConfig.SelectedItems[itmData.Key] = not DropConfig.SelectedItems[itmData.Key]
+            local cur = DropConfig.SelectedItems[itmData.Key]
+            
+            rowBtn.BackgroundColor3 = cur and C.SEL or C.PANEL
+            local st = rowBtn:FindFirstChildOfClass("UIStroke")
+            if st then
+                st.Color = cur and C.ACCENT or C.BORDER
+                st.Thickness = cur and 1.2 or 1
+            end
+            
+            checkBtn.BackgroundColor3 = cur and C.ACCENT or C.CARD
+            checkBtn.Text = cur and "DROP" or "SKIP"
+            checkBtn.TextColor3 = cur and Color3.new(1, 1, 1) or C.MUTED
+            nameLbl.TextColor3 = cur and Color3.new(1, 1, 1) or C.TEXT
+            nameLbl.Font = cur and Enum.Font.GothamBold or Enum.Font.Gotham
+            countLblRow.TextColor3 = cur and Color3.fromRGB(134, 239, 172) or Color3.fromRGB(74, 222, 128)
+        end
+
+        rowBtn.MouseButton1Click:Connect(toggleSelection)
+        checkBtn.MouseButton1Click:Connect(toggleSelection)
+    end
+
+    if count == 0 then
+        local emptyLbl = mkLbl(itemListScroll, "Tas Anda sedang kosong...", 11, false, C.MUTED, Enum.TextXAlignment.Center)
+        emptyLbl.Size = UDim2.new(1, 0, 0, 30); emptyLbl.AutomaticSize = Enum.AutomaticSize.None
+    end
+end
+
+-- Quick Selection Actions
+mkQBtn("Pilih Semua", function()
+    local inv = scanBackpack()
+    for _, itm in ipairs(inv.List) do DropConfig.SelectedItems[itm.Key] = true end
+    renderItemList()
+end)
+
+mkQBtn("Hapus Semua", function()
+    DropConfig.SelectedItems = {}
+    renderItemList()
+end)
+
+mkQBtn("Common/Unc", function()
+    local inv = scanBackpack()
+    DropConfig.SelectedItems = {}
+    for _, itm in ipairs(inv.List) do
+        if itm.Rarity == "COMMON" or itm.Rarity == "UNCOMMON" or itm.Rarity == "RARE" then
+            DropConfig.SelectedItems[itm.Key] = true
+        end
+    end
+    renderItemList()
+end)
+
+mkQBtn("Mythic+", function()
+    local inv = scanBackpack()
+    DropConfig.SelectedItems = {}
+    for _, itm in ipairs(inv.List) do
+        if itm.Rarity == "MYTHIC" or itm.Rarity == "EMPYREAN" or itm.Rarity == "PULSAR" or itm.Rarity == "QUASAR" or itm.Rarity == "SECRET" then
+            DropConfig.SelectedItems[itm.Key] = true
+        end
+    end
+    renderItemList()
+end)
+
+refreshBpBtn.MouseButton1Click:Connect(renderItemList)
+
+-- Auto sync saat isi tas berubah
+local function bindBackpackEvents()
+    local bp = LocalPlayer:FindFirstChild("Backpack")
+    if bp then
+        bp.ChildAdded:Connect(function() task.wait(0.1); renderItemList() end)
+        bp.ChildRemoved:Connect(function() task.wait(0.1); renderItemList() end)
+    end
+end
+bindBackpackEvents()
+LocalPlayer.CharacterAdded:Connect(function() task.wait(1); bindBackpackEvents() end)
+task.defer(renderItemList)
+
+-- Minimize Logic
+local isMin = false
+minBtn.MouseButton1Click:Connect(function()
+    isMin = not isMin
+    if isMin then
+        TweenService:Create(Main, TweenInfo.new(0.2), { Size = UDim2.new(0, 400, 0, 44) }):Play()
+        Body.Visible = false
+        minBtn.Text = "+"
+    else
+        Body.Visible = true
+        TweenService:Create(Main, TweenInfo.new(0.2), { Size = UDim2.new(0, 400, 0, 480) }):Play()
+        minBtn.Text = "−"
+    end
+end)
+
+print("[AHH CROTT - Auto Drop Crystal Clean Edition] Berhasil dimuat!")
