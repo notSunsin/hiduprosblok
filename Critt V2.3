@@ -1,0 +1,1911 @@
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local TweenService      = game:GetService("TweenService")
+local Workspace         = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService  = game:GetService("UserInputService")
+local StarterGui        = game:GetService("StarterGui")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+-- ============================================================
+--  GLOBAL STATE & CONFIG
+-- ============================================================
+local Config = {
+    Running         = false,
+    MaxStuds        = 50,
+    CollectDelay    = 0.001,
+    InstantHold     = true,
+    ServerRemote    = true,
+    AutoTeleport    = false,
+    SortByDistance  = true,
+    LimitEnabled    = false,
+    LimitAmount     = 50,
+    EnabledRarities = {
+        ["COMMON"] = true, ["UNCOMMON"] = true, ["RARE"] = true,
+        ["EPIC"] = true, ["LEGENDARY"] = true, ["MYTHIC"] = true,
+        ["EMPYREAN"] = true, ["PULSAR"] = true, ["QUASAR"] = true,
+        ["SECRET"] = true,
+    },
+    NameFilterMode  = "ALL",
+    NameFilterText  = "",
+    NameList        = {},
+}
+
+local PlayerConfig = {
+    WalkSpeedEnabled = false,
+    WalkSpeedValue   = 60,
+    DefaultWalkSpeed = 16,
+    FlyEnabled       = false,
+    FlySpeed         = 50,
+}
+
+local DupeState = {
+    Running         = false,
+    RequestCount    = 0,
+    ResetCooldown   = false,
+    SelectedRunes   = {
+        ["Haste Rune"] = false, ["Storm Rune"] = false, ["Weight Rune"] = false,
+        ["Fortune Rune"] = false, ["Detonation Rune"] = false, ["Preservation Rune"] = false,
+        ["Warmth Rune"] = false, ["Excavator Rune"] = false, ["Colossus Rune"] = false,
+    }
+}
+
+local FavConfig = {
+    FilterLuckOnly   = false,
+    LuckOperator     = "ABOVE", -- "ABOVE" (>=) atau "BELOW" (<=)
+    LuckTargetRaw    = 0,
+    LuckInputText    = "",
+    TargetSize       = "ALL",
+    SearchText       = "",
+    IsProcessing     = false
+}
+
+local RuneList = {
+    { display = "Haste",        remote = "Haste Rune" },
+    { display = "Storm",        remote = "Storm Rune" },
+    { display = "Weight",       remote = "Weight Rune" },
+    { display = "Fortune",      remote = "Fortune Rune" },
+    { display = "Detonation",   remote = "Detonation Rune" },
+    { display = "Preservation", remote = "Preservation Rune" },
+    { display = "Warmth",       remote = "Warmth Rune" },
+    { display = "Excavator",    remote = "Excavator Rune" },
+    { display = "Colossus",     remote = "Colossus Rune" }
+}
+
+local Stats = {
+    TotalCollected      = 0,
+    LastCollected       = "-",
+    LastRarity          = "-",
+    StatusText          = "IDLE (Siap)",
+    SessionStartTime    = nil,
+    SessionCollected    = 0,
+    CollectedByRarity   = {
+        ["COMMON"] = 0, ["UNCOMMON"] = 0, ["RARE"] = 0, ["EPIC"] = 0,
+        ["LEGENDARY"] = 0, ["MYTHIC"] = 0, ["EMPYREAN"] = 0,
+        ["PULSAR"] = 0, ["QUASAR"] = 0, ["SECRET"] = 0
+    }
+}
+
+local TierMap = {
+    [1] = "COMMON", [2] = "UNCOMMON", [3] = "RARE",
+    [4] = "EPIC", [5] = "LEGENDARY", [6] = "MYTHIC",
+    [7] = "EMPYREAN", [8] = "PULSAR", [9] = "QUASAR",
+}
+
+local RarityColors = {
+    ["COMMON"]      = Color3.fromRGB(220, 195, 140),
+    ["UNCOMMON"]    = Color3.fromRGB(110, 190, 240),
+    ["RARE"]        = Color3.fromRGB(80, 240, 220),
+    ["EPIC"]        = Color3.fromRGB(170, 100, 255),
+    ["LEGENDARY"]   = Color3.fromRGB(255, 80, 180),
+    ["MYTHIC"]      = Color3.fromRGB(190, 70, 255),
+    ["EMPYREAN"]    = Color3.fromRGB(255, 215, 0),
+    ["PULSAR"]      = Color3.fromRGB(90, 210, 255),
+    ["QUASAR"]      = Color3.fromRGB(255, 90, 220),
+    ["SECRET"]      = Color3.fromRGB(244, 63, 94),
+    ["OTHER"]       = Color3.fromRGB(156, 163, 175),
+}
+
+local RarityOrder = {
+    ["QUASAR"] = 1, ["PULSAR"] = 2, ["EMPYREAN"] = 3,
+    ["MYTHIC"] = 4, ["LEGENDARY"] = 5, ["EPIC"] = 6,
+    ["RARE"] = 7, ["UNCOMMON"] = 8, ["COMMON"] = 9,
+    ["SECRET"] = 0, ["OTHER"] = 10
+}
+
+local Theme = {
+    BG     = Color3.fromRGB(13, 15, 22),
+    PANEL  = Color3.fromRGB(20, 22, 33),
+    CARD   = Color3.fromRGB(28, 30, 45),
+    ACCENT = Color3.fromRGB(168, 85, 247),
+    ACC2   = Color3.fromRGB(59, 130, 246),
+    ACC3   = Color3.fromRGB(236, 72, 153),
+    ACC_FAV= Color3.fromRGB(234, 179, 8),
+    ACC4   = Color3.fromRGB(34, 197, 94),
+    GREEN  = Color3.fromRGB(34, 197, 94),
+    RED    = Color3.fromRGB(239, 68, 68),
+    TEXT   = Color3.fromRGB(243, 244, 246),
+    MUTED  = Color3.fromRGB(156, 163, 175),
+    BORDER = Color3.fromRGB(50, 56, 75),
+    SEL    = Color3.fromRGB(88, 28, 135),
+}
+
+local UI = {}
+_G.CrystalCollectLogs = _G.CrystalCollectLogs or {}
+
+-- ============================================================
+--  PARSER NUMBER SUFFIX (K, M, B, T, QA, QI)
+-- ============================================================
+local function parseSuffixNumber(str)
+    if not str then return 0 end
+    local clean = tostring(str):gsub(",", ""):gsub("%+", ""):gsub("%%", ""):gsub("%$", ""):gsub("%s+", ""):upper()
+    
+    local num, suffix = clean:match("^([%d%.]+)([A-Z]*)$")
+    if not num then return tonumber(clean) or 0 end
+    
+    local val = tonumber(num) or 0
+    if suffix == "K" then val = val * 1e3
+    elseif suffix == "M" then val = val * 1e6
+    elseif suffix == "B" then val = val * 1e9
+    elseif suffix == "T" then val = val * 1e12
+    elseif suffix == "QA" or suffix == "Q" then val = val * 1e15
+    elseif suffix == "QI" then val = val * 1e18 end
+    
+    return val
+end
+
+local function formatSuffixNumber(val)
+    local n = tonumber(val) or 0
+    if n >= 1e18 then return string.format("%.2fQi", n / 1e18)
+    elseif n >= 1e15 then return string.format("%.2fQa", n / 1e15)
+    elseif n >= 1e12 then return string.format("%.2fT", n / 1e12)
+    elseif n >= 1e9 then return string.format("%.2fB", n / 1e9)
+    elseif n >= 1e6 then return string.format("%.2fM", n / 1e6)
+    elseif n >= 1e3 then return string.format("%.1fK", n / 1e3)
+    else return tostring(math.floor(n)) end
+end
+
+-- ============================================================
+--  REMOTE & ITEM HELPERS
+-- ============================================================
+local function getRemote(name)
+    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+    if remotes and remotes:FindFirstChild(name) then return remotes:FindFirstChild(name) end
+    for _, desc in ipairs(ReplicatedStorage:GetDescendants()) do
+        if desc.Name == name and (desc:IsA("RemoteEvent") or desc:IsA("RemoteFunction")) then
+            return desc
+        end
+    end
+    return nil
+end
+
+local function toggleItemFavoriteRemote(item, setFavState)
+    local favRemotes = {
+        "FavoriteItem", "ToggleFavorite", "SetFavorite", "CrystalFavorite", 
+        "ItemFavorite", "LockItem", "ToggleLock", "FavoriteTool"
+    }
+    for _, rName in ipairs(favRemotes) do
+        local rem = getRemote(rName)
+        if rem then
+            pcall(function()
+                if rem:IsA("RemoteEvent") then rem:FireServer(item, setFavState)
+                elseif rem:IsA("RemoteFunction") then rem:InvokeServer(item, setFavState) end
+            end)
+            return true
+        end
+    end
+    if item then
+        pcall(function()
+            item:SetAttribute("IsFavorite", setFavState)
+            item:SetAttribute("Favorite", setFavState)
+        end)
+    end
+    return false
+end
+
+local function updateParsedNameList()
+    Config.NameList = {}
+    if Config.NameFilterText and Config.NameFilterText ~= "" then
+        for item in string.gmatch(Config.NameFilterText, "([^,]+)") do
+            local clean = item:gsub("^%s+", ""):gsub("%s+$", ""):lower()
+            if clean ~= "" then table.insert(Config.NameList, clean) end
+        end
+    end
+end
+
+local function getCharacterPosition()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    local hrp = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+    return hrp and hrp.Position
+end
+
+local function isCrystalPrompt(prompt)
+    if not prompt or not prompt:IsA("ProximityPrompt") then return false end
+    local parent = prompt.Parent
+    if not parent then return false end
+
+    local pName = parent.Name:lower()
+    local pObjText = prompt.ObjectText:lower()
+    local pActText = prompt.ActionText:lower()
+
+    if pActText:find("pickup") or pActText:find("ambil") or pActText:find("collect") or pActText:find("take") then return true end
+    if pName:find("crystal") or pName:find("rune") or pName:find("drop") or pObjText:find("crystal") or pObjText:find("rune") then return true end
+    if parent:GetAttribute("CrystalName") or parent:GetAttribute("Tier") or parent:GetAttribute("RuneName") or parent:GetAttribute("RuneId") then return true end
+
+    for _, desc in ipairs(parent:GetChildren()) do
+        if desc:IsA("BillboardGui") then
+            for _, lbl in ipairs(desc:GetDescendants()) do
+                if lbl:IsA("TextLabel") and (lbl.Text:lower():find("crystal") or lbl.Text:lower():find("rune") or lbl.Text:lower():find("luck")) then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function getCrystalInfo(prompt)
+    local parent = prompt.Parent
+    local name = prompt.ObjectText ~= "" and prompt.ObjectText or (parent and parent.Name or "Crystal")
+    local rarity = "COMMON"
+    local luckValue = 0
+    local size = "NORMAL"
+    local weight = 0
+
+    if parent then
+        local attrName = parent:GetAttribute("CrystalName") or parent:GetAttribute("DisplayName") or parent:GetAttribute("RuneName")
+        if attrName and tostring(attrName) ~= "" then name = tostring(attrName) end
+
+        local attrTier = parent:GetAttribute("Tier")
+        if attrTier and TierMap[tonumber(attrTier)] then rarity = TierMap[tonumber(attrTier)] end
+
+        local attrRarity = parent:GetAttribute("Rarity") or parent:GetAttribute("TierName")
+        if attrRarity and RarityColors[tostring(attrRarity):upper()] then
+            rarity = tostring(attrRarity):upper()
+        end
+
+        local attrLuck = parent:GetAttribute("Luck") or parent:GetAttribute("LuckBonus")
+        if attrLuck then luckValue = parseSuffixNumber(attrLuck) end
+
+        for _, desc in ipairs(parent:GetChildren()) do
+            if desc:IsA("BillboardGui") then
+                for _, lbl in ipairs(desc:GetDescendants()) do
+                    if lbl:IsA("TextLabel") then
+                        local t = lbl.Text
+                        local ut = t:upper()
+
+                        if ut:find("QUASAR") then rarity = "QUASAR"
+                        elseif ut:find("PULSAR") then rarity = "PULSAR"
+                        elseif ut:find("EMPYREAN") then rarity = "EMPYREAN"
+                        elseif ut:find("MYTHIC") then rarity = "MYTHIC"
+                        elseif ut:find("LEGENDARY") or ut:find("LEGENDARIS") then rarity = "LEGENDARY"
+                        elseif ut:find("EPIC") then rarity = "EPIC"
+                        elseif ut:find("RARE") then rarity = "RARE"
+                        elseif ut:find("UNCOMMON") then rarity = "UNCOMMON"
+                        elseif ut:find("COMMON") or ut:find("UMUM") then rarity = "COMMON"
+                        elseif ut:find("SECRET") or ut:find("BLOOD") then rarity = "SECRET" end
+
+                        local parsedLuck = t:match("[Ll]uck:%s*%+?([%d%,%.%a]+)%%?")
+                        if parsedLuck then luckValue = parseSuffixNumber(parsedLuck) end
+
+                        local parsedSize = t:match("%[([%a%d]+)%]")
+                        if parsedSize and (#parsedSize <= 3 or parsedSize == "XXL" or parsedSize == "XL" or parsedSize == "L" or parsedSize == "M" or parsedSize == "S") then
+                            size = parsedSize:upper()
+                        end
+
+                        local parsedW = t:match("([%d%,%.]+)%s*kg")
+                        if parsedW then weight = parseSuffixNumber(parsedW) end
+
+                        if t ~= "" and not name:find("Crystal") and (lbl.Name == "ObjectText" or lbl.Name == "DisplayName" or lbl.Name:find("Name") or t:find("%(")) then
+                            name = t
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    local uname = (name .. " " .. (prompt.ObjectText or "")):upper()
+    if uname:find("QUASAR") then rarity = "QUASAR"
+    elseif uname:find("PULSAR") then rarity = "PULSAR"
+    elseif uname:find("EMPYREAN") then rarity = "EMPYREAN"
+    elseif uname:find("MYTHIC") then rarity = "MYTHIC"
+    elseif uname:find("LEGENDARY") or uname:find("LEGENDARIS") then rarity = "LEGENDARY"
+    elseif uname:find("EPIC") then rarity = "EPIC"
+    elseif uname:find("RARE") then rarity = "RARE"
+    elseif uname:find("UNCOMMON") then rarity = "UNCOMMON"
+    elseif uname:find("COMMON") or uname:find("UMUM") then rarity = "COMMON"
+    elseif uname:find("SECRET") or uname:find("BLOOD") then rarity = "SECRET" end
+
+    return name, rarity, luckValue, size, weight
+end
+
+local function matchesNameFilter(crystalName)
+    if Config.NameFilterMode == "ALL" or #Config.NameList == 0 then return true end
+    local cleanName = crystalName:lower()
+    local matched = false
+    for _, query in ipairs(Config.NameList) do
+        if cleanName:find(query, 1, true) then matched = true; break end
+    end
+    if Config.NameFilterMode == "WHITELIST" then return matched
+    elseif Config.NameFilterMode == "BLACKLIST" then return not matched end
+    return true
+end
+
+-- ============================================================
+--  BACKPACK SCANNER
+-- ============================================================
+local function parseItemDetails(itm)
+    local rawName = itm.Name
+    local displayName = rawName
+    local rarity = "COMMON"
+    local size = "NORMAL"
+    local weight = 0
+    local luckValue = 0
+    local hasLuck = false
+    local isFavorite = false
+
+    local attrName = itm:GetAttribute("CrystalName") or itm:GetAttribute("DisplayName") or itm:GetAttribute("RuneName")
+    if attrName and tostring(attrName) ~= "" then displayName = tostring(attrName) end
+
+    local attrTier = itm:GetAttribute("Tier")
+    if attrTier and TierMap[tonumber(attrTier)] then rarity = TierMap[tonumber(attrTier)] end
+
+    local attrRarity = itm:GetAttribute("Rarity") or itm:GetAttribute("TierName")
+    if attrRarity and RarityColors[tostring(attrRarity):upper()] then
+        rarity = tostring(attrRarity):upper()
+    end
+
+    if itm:GetAttribute("IsFavorite") == true or itm:GetAttribute("Favorite") == true or itm:GetAttribute("Locked") == true then
+        isFavorite = true
+    elseif itm:FindFirstChild("Favorite") or itm:FindFirstChild("IsFavorite") or itm:FindFirstChild("Locked") then
+        isFavorite = true
+    end
+
+    local attrLuck = itm:GetAttribute("Luck") or itm:GetAttribute("LuckBonus") or itm:GetAttribute("BonusLuck") or itm:GetAttribute("Multiplier")
+    if attrLuck then
+        luckValue = parseSuffixNumber(attrLuck)
+        hasLuck = luckValue > 0
+    elseif itm:FindFirstChild("Luck") and itm.Luck:IsA("ValueBase") then
+        luckValue = parseSuffixNumber(itm.Luck.Value)
+        hasLuck = luckValue > 0
+    end
+
+    local attrSize = itm:GetAttribute("Size") or itm:GetAttribute("CrystalSize")
+    if attrSize then size = tostring(attrSize):upper() end
+
+    local attrWeight = itm:GetAttribute("Weight") or itm:GetAttribute("Mass")
+    if attrWeight then weight = parseSuffixNumber(attrWeight) end
+
+    local parsedSize = rawName:match("%[([%a%d]+)%]")
+    if parsedSize and (#parsedSize <= 3 or parsedSize == "XXL" or parsedSize == "XL" or parsedSize == "L" or parsedSize == "M" or parsedSize == "S") then
+        size = parsedSize:upper()
+    end
+
+    local parsedWeight = rawName:match("%[([%d%,%.]+)%s*kg%]") or rawName:match("([%d%,%.]+)%s*kg")
+    if parsedWeight then weight = parseSuffixNumber(parsedWeight) end
+
+    local parsedLuck = rawName:match("[Ll]uck:%s*%+?([%d%,%.%a]+)%%?") or rawName:match("%+([%d%,%.%a]+)%%%s*[Ll]uck")
+    if parsedLuck then
+        luckValue = parseSuffixNumber(parsedLuck)
+        hasLuck = luckValue > 0
+    end
+
+    for _, desc in ipairs(itm:GetDescendants()) do
+        if desc:IsA("TextLabel") and desc.Text ~= "" then
+            local t = desc.Text
+            local pL = t:match("[Ll]uck:%s*%+?([%d%,%.%a]+)%%?")
+            if pL then
+                luckValue = parseSuffixNumber(pL)
+                hasLuck = luckValue > 0
+            end
+            local pW = t:match("([%d%,%.]+)%s*kg")
+            if pW and weight == 0 then weight = parseSuffixNumber(pW) end
+        end
+    end
+
+    if rarity == "COMMON" then
+        local uname = (rawName .. " " .. displayName):upper()
+        if uname:find("QUASAR") then rarity = "QUASAR"
+        elseif uname:find("PULSAR") then rarity = "PULSAR"
+        elseif uname:find("EMPYREAN") then rarity = "EMPYREAN"
+        elseif uname:find("MYTHIC") then rarity = "MYTHIC"
+        elseif uname:find("LEGENDARY") or uname:find("LEGENDARIS") then rarity = "LEGENDARY"
+        elseif uname:find("EPIC") then rarity = "EPIC"
+        elseif uname:find("RARE") then rarity = "RARE"
+        elseif uname:find("UNCOMMON") then rarity = "UNCOMMON"
+        elseif uname:find("SECRET") or uname:find("BLOOD") then rarity = "SECRET" end
+    end
+
+    return {
+        Instance    = itm,
+        Name        = displayName,
+        RawName     = rawName,
+        Rarity      = rarity,
+        Size        = size,
+        Weight      = weight,
+        Luck        = luckValue,
+        LuckDisplay = hasLuck and ("+" .. formatSuffixNumber(luckValue) .. "%") or "-",
+        HasLuck     = hasLuck,
+        IsFavorite  = isFavorite,
+    }
+end
+
+local function scanBackpack()
+    local inv = {
+        Total = 0,
+        TotalLuckItems = 0,
+        ByRarity = {
+            ["QUASAR"] = 0, ["PULSAR"] = 0, ["EMPYREAN"] = 0,
+            ["MYTHIC"] = 0, ["LEGENDARY"] = 0, ["EPIC"] = 0,
+            ["RARE"] = 0, ["UNCOMMON"] = 0, ["COMMON"] = 0,
+            ["SECRET"] = 0, ["OTHER"] = 0
+        },
+        ByItem = {},
+        List = {},
+        RawItems = {}
+    }
+
+    local items = {}
+    local bp = LocalPlayer:FindFirstChild("Backpack")
+    if bp then for _, itm in ipairs(bp:GetChildren()) do table.insert(items, itm) end end
+
+    local char = LocalPlayer.Character
+    if char then
+        for _, itm in ipairs(char:GetChildren()) do
+            if itm:IsA("Tool") then table.insert(items, itm) end
+        end
+    end
+
+    for _, itm in ipairs(items) do
+        local details = parseItemDetails(itm)
+        table.insert(inv.RawItems, details)
+
+        inv.Total = inv.Total + 1
+        inv.ByRarity[details.Rarity] = (inv.ByRarity[details.Rarity] or 0) + 1
+        if details.HasLuck then inv.TotalLuckItems = inv.TotalLuckItems + 1 end
+
+        local key = details.Rarity .. "::" .. details.Name .. "::" .. details.Size .. "::" .. tostring(details.Luck)
+        if not inv.ByItem[key] then 
+            inv.ByItem[key] = { 
+                Rarity      = details.Rarity, 
+                Name        = details.Name, 
+                Size        = details.Size,
+                Weight      = details.Weight,
+                Luck        = details.Luck,
+                LuckDisplay = details.LuckDisplay,
+                HasLuck     = details.HasLuck,
+                Count       = 0,
+                Items       = {},
+                IsFavorite  = details.IsFavorite
+            } 
+        end
+        inv.ByItem[key].Count = inv.ByItem[key].Count + 1
+        table.insert(inv.ByItem[key].Items, details)
+    end
+
+    for _, data in pairs(inv.ByItem) do table.insert(inv.List, data) end
+
+    table.sort(inv.List, function(a, b)
+        local orderA = RarityOrder[a.Rarity] or 99
+        local orderB = RarityOrder[b.Rarity] or 99
+        if orderA ~= orderB then return orderA < orderB end
+        if a.Luck ~= b.Luck then return a.Luck > b.Luck end
+        if a.Count ~= b.Count then return a.Count > b.Count end
+        return a.Name < b.Name
+    end)
+
+    return inv
+end
+
+-- ============================================================
+--  AUTO COLLECT CYCLE
+-- ============================================================
+local function triggerPickup(prompt, part)
+    if not prompt or not prompt.Parent then return false end
+    if Config.InstantHold then prompt.HoldDuration = 0 end
+
+    if Config.ServerRemote and part then
+        pcall(function()
+            local rem = getRemote("CrystalHoldComplete")
+            if rem then rem:FireServer(part) end
+        end)
+    end
+
+    if typeof(fireproximityprompt) == "function" then
+        pcall(function() fireproximityprompt(prompt, 0) end)
+        return true
+    end
+
+    return pcall(function()
+        prompt:InputHoldBegin()
+        task.wait(Config.InstantHold and 0.01 or (prompt.HoldDuration > 0 and prompt.HoldDuration or 0.01))
+        prompt:InputHoldEnd()
+    end)
+end
+
+local function getNearbyCrystals()
+    local charPos = getCharacterPosition()
+    if not charPos then return {} end
+
+    local found = {}
+    for _, prompt in ipairs(Workspace:GetDescendants()) do
+        if prompt:IsA("ProximityPrompt") and prompt.Enabled and isCrystalPrompt(prompt) then
+            local part = prompt.Parent
+            local pos = nil
+            if part:IsA("BasePart") then pos = part.Position
+            elseif part:IsA("Model") and part.PrimaryPart then pos = part.PrimaryPart.Position
+            elseif part:IsA("Attachment") then pos = part.WorldPosition
+            elseif part:IsA("Model") then
+                local fp = part:FindFirstChildWhichIsA("BasePart", true)
+                if fp then pos = fp.Position end
+            end
+
+            if pos then
+                local dist = (charPos - pos).Magnitude
+                if dist <= Config.MaxStuds then
+                    local name, rarity, luck, size, weight = getCrystalInfo(prompt)
+                    if Config.EnabledRarities[rarity] ~= false and matchesNameFilter(name) then
+                        table.insert(found, {
+                            Prompt   = prompt,
+                            Part     = part,
+                            Position = pos,
+                            Distance = dist,
+                            Name     = name,
+                            Rarity   = rarity,
+                            Luck     = luck,
+                            Size     = size,
+                            Weight   = weight,
+                        })
+                    end
+                end
+            end
+        end
+    end
+
+    if Config.SortByDistance then
+        table.sort(found, function(a, b) return a.Distance < b.Distance end)
+    end
+    return found
+end
+
+local isCollecting = false
+local function stopLoop()
+    Config.Running = false
+    Stats.StatusText = "IDLE (Dihentikan)"
+    if UI.StartBtn then
+        UI.StartBtn.Text = "START AUTO COLLECT"
+        UI.StartBtn.BackgroundColor3 = Color3.fromRGB(34, 197, 94)
+    end
+end
+
+local function collectCycle()
+    if isCollecting or not Config.Running then return end
+    isCollecting = true
+
+    if Config.LimitEnabled and Stats.SessionCollected >= Config.LimitAmount then
+        stopLoop()
+        Stats.StatusText = string.format("LIMIT TERCAPAI (%d/%d)", Stats.SessionCollected, Config.LimitAmount)
+        pcall(function()
+            StarterGui:SetCore("SendNotification", {
+                Title = "Auto Collect Selesai!",
+                Text = string.format("Limit %d Crystal telah tercapai!", Config.LimitAmount),
+                Duration = 4
+            })
+        end)
+        isCollecting = false
+        return
+    end
+
+    local crystals = getNearbyCrystals()
+    if #crystals > 0 then
+        Stats.StatusText = string.format("Mengambil %d Crystal di sekitar...", #crystals)
+        for _, cData in ipairs(crystals) do
+            if not Config.Running then break end
+            
+            if Config.LimitEnabled and Stats.SessionCollected >= Config.LimitAmount then
+                stopLoop()
+                Stats.StatusText = string.format("LIMIT TERCAPAI (%d/%d)", Stats.SessionCollected, Config.LimitAmount)
+                break
+            end
+
+            local myPos = getCharacterPosition()
+            if myPos and cData.Prompt and cData.Prompt.Parent then
+                local curDist = (myPos - cData.Position).Magnitude
+                if curDist <= (Config.MaxStuds + 5) then
+                    if Config.AutoTeleport and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                        LocalPlayer.Character.HumanoidRootPart.CFrame = CFrame.new(cData.Position + Vector3.new(0, 2, 0))
+                        task.wait(0.04)
+                    end
+
+                    local ok = triggerPickup(cData.Prompt, cData.Part)
+                    if ok then
+                        Stats.TotalCollected = Stats.TotalCollected + 1
+                        Stats.SessionCollected = Stats.SessionCollected + 1
+                        Stats.LastCollected = cData.Name
+                        Stats.LastRarity = cData.Rarity
+                        Stats.CollectedByRarity[cData.Rarity] = (Stats.CollectedByRarity[cData.Rarity] or 0) + 1
+                        
+                        local logMsg = string.format("[%s] %s", cData.Rarity, cData.Name)
+                        if cData.Luck > 0 then
+                            logMsg = logMsg .. " 🍀[+" .. formatSuffixNumber(cData.Luck) .. "%]"
+                        end
+                        logMsg = logMsg .. string.format(" (%.1fm)", curDist)
+
+                        table.insert(_G.CrystalCollectLogs, 1, logMsg)
+                        if #_G.CrystalCollectLogs > 60 then table.remove(_G.CrystalCollectLogs) end
+                    end
+
+                    if Config.CollectDelay > 0 then task.wait(Config.CollectDelay) end
+                end
+            end
+        end
+    else
+        Stats.StatusText = string.format("Scanning (%ds)...", Config.MaxStuds)
+    end
+
+    isCollecting = false
+end
+
+local loopThread = nil
+local function startLoop()
+    if loopThread then return end
+    Stats.SessionStartTime = os.time()
+    Stats.SessionCollected = 0
+    updateParsedNameList()
+    loopThread = task.spawn(function()
+        while Config.Running do
+            pcall(collectCycle)
+            task.wait(Config.CollectDelay > 0 and Config.CollectDelay or 0.05)
+        end
+        loopThread = nil
+    end)
+end
+
+-- ============================================================
+--  PLAYER MOVEMENT & DUPE
+-- ============================================================
+local flyBodyVelocity = nil
+local flyBodyGyro = nil
+local flyConnection = nil
+local moveKeys = { Forward = false, Backward = false, Left = false, Right = false, Up = false, Down = false }
+
+local function startFly()
+    if not LocalPlayer.Character then return end
+    local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then return end
+
+    if flyBodyVelocity then flyBodyVelocity:Destroy() end
+    if flyBodyGyro then flyBodyGyro:Destroy() end
+
+    flyBodyVelocity = Instance.new("BodyVelocity")
+    flyBodyVelocity.Name = "FlyVelocity"
+    flyBodyVelocity.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+    flyBodyVelocity.Velocity = Vector3.zero
+    flyBodyVelocity.Parent = hrp
+
+    flyBodyGyro = Instance.new("BodyGyro")
+    flyBodyGyro.Name = "FlyGyro"
+    flyBodyGyro.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
+    flyBodyGyro.P = 10000
+    flyBodyGyro.CFrame = hrp.CFrame
+    flyBodyGyro.Parent = hrp
+
+    hum.PlatformStand = true
+
+    if flyConnection then flyConnection:Disconnect() end
+    flyConnection = RunService.RenderStepped:Connect(function()
+        if not PlayerConfig.FlyEnabled or not LocalPlayer.Character or not hrp or not flyBodyVelocity then return end
+        local cam = Workspace.CurrentCamera
+        local moveDir = Vector3.zero
+        if moveKeys.Forward  then moveDir = moveDir + cam.CFrame.LookVector end
+        if moveKeys.Backward then moveDir = moveDir - cam.CFrame.LookVector end
+        if moveKeys.Left     then moveDir = moveDir - cam.CFrame.RightVector end
+        if moveKeys.Right    then moveDir = moveDir + cam.CFrame.RightVector end
+        if moveKeys.Up       then moveDir = moveDir + Vector3.new(0, 1, 0) end
+        if moveKeys.Down     then moveDir = moveDir - Vector3.new(0, 1, 0) end
+
+        if moveDir.Magnitude > 0 then
+            flyBodyVelocity.Velocity = moveDir.Unit * PlayerConfig.FlySpeed
+        else
+            flyBodyVelocity.Velocity = Vector3.zero
+        end
+        flyBodyGyro.CFrame = cam.CFrame
+    end)
+end
+
+local function stopFly()
+    if flyConnection then flyConnection:Disconnect(); flyConnection = nil end
+    if flyBodyVelocity then flyBodyVelocity:Destroy(); flyBodyVelocity = nil end
+    if flyBodyGyro then flyBodyGyro:Destroy(); flyBodyGyro = nil end
+    if LocalPlayer.Character then
+        local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if hum then hum.PlatformStand = false end
+    end
+end
+
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.W then moveKeys.Forward = true
+    elseif input.KeyCode == Enum.KeyCode.S then moveKeys.Backward = true
+    elseif input.KeyCode == Enum.KeyCode.A then moveKeys.Left = true
+    elseif input.KeyCode == Enum.KeyCode.D then moveKeys.Right = true
+    elseif input.KeyCode == Enum.KeyCode.Space or input.KeyCode == Enum.KeyCode.E then moveKeys.Up = true
+    elseif input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.LeftShift or input.KeyCode == Enum.KeyCode.Q then moveKeys.Down = true end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.KeyCode == Enum.KeyCode.W then moveKeys.Forward = false
+    elseif input.KeyCode == Enum.KeyCode.S then moveKeys.Backward = false
+    elseif input.KeyCode == Enum.KeyCode.A then moveKeys.Left = false
+    elseif input.KeyCode == Enum.KeyCode.D then moveKeys.Right = false
+    elseif input.KeyCode == Enum.KeyCode.Space or input.KeyCode == Enum.KeyCode.E then moveKeys.Up = false
+    elseif input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.LeftShift or input.KeyCode == Enum.KeyCode.Q then moveKeys.Down = false end
+end)
+
+RunService.Heartbeat:Connect(function()
+    if PlayerConfig.WalkSpeedEnabled and LocalPlayer.Character then
+        local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if hum and hum.WalkSpeed ~= PlayerConfig.WalkSpeedValue then
+            hum.WalkSpeed = PlayerConfig.WalkSpeedValue
+        end
+    end
+end)
+
+local dupeThread = nil
+local function startDupeLoop()
+    if DupeState.Running then return end
+    DupeState.Running = true
+    dupeThread = task.spawn(function()
+        local runeEvent = getRemote("CrystalDropRequest")
+        while DupeState.Running do
+            if runeEvent then
+                for remoteName, isSelected in pairs(DupeState.SelectedRunes) do
+                    if isSelected and DupeState.Running then
+                        pcall(function() runeEvent:FireServer(remoteName) end)
+                        DupeState.RequestCount = DupeState.RequestCount + 1
+                    end
+                end
+            end
+            task.wait(0)
+        end
+        dupeThread = nil
+    end)
+end
+
+local function stopDupeLoop()
+    DupeState.Running = false
+end
+
+local function triggerCrystalReset()
+    if DupeState.ResetCooldown then return end
+    DupeState.ResetCooldown = true
+    if LocalPlayer.Character then pcall(function() LocalPlayer.Character:BreakJoints() end) end
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = "Crystal Reset (Die)",
+            Text = "Cooldown 6 detik untuk menghindari anti-cheat...",
+            Duration = 3
+        })
+    end)
+    task.spawn(function()
+        task.wait(6)
+        DupeState.ResetCooldown = false
+    end)
+end
+
+-- ============================================================
+--  MODULAR UI CREATION
+-- ============================================================
+local function mkCorner(p, r) local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 8); c.Parent = p end
+local function mkStroke(p, col, t) local s = Instance.new("UIStroke"); s.Color = col or Theme.BORDER; s.Thickness = t or 1; s.Parent = p end
+local function mkLbl(p, txt, sz, bold, col, xal)
+    local L = Instance.new("TextLabel")
+    L.BackgroundTransparency = 1; L.Text = txt; L.TextSize = sz or 12
+    L.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+    L.TextColor3 = col or Theme.TEXT
+    L.TextXAlignment = xal or Enum.TextXAlignment.Left
+    L.AutomaticSize = Enum.AutomaticSize.XY; L.Parent = p
+    return L
+end
+
+do
+    local oldGui = LocalPlayer.PlayerGui:FindFirstChild("CROTTT_AutoCrystalGUI")
+    if oldGui then oldGui:Destroy() end
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "CROTTT_AutoCrystalGUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = LocalPlayer.PlayerGui
+UI.ScreenGui = ScreenGui
+
+local Main = Instance.new("Frame")
+Main.Name = "MainFrame"
+Main.Size = UDim2.new(0, 420, 0, 600)
+Main.Position = UDim2.new(0, 30, 0.5, -300)
+Main.BackgroundColor3 = Theme.BG
+Main.BorderSizePixel = 0
+Main.Active = true
+Main.Draggable = true
+Main.Parent = ScreenGui
+mkCorner(Main, 12)
+mkStroke(Main, Theme.BORDER, 1)
+UI.Main = Main
+
+-- Title Bar
+do
+    local TBar = Instance.new("Frame")
+    TBar.Size = UDim2.new(1, 0, 0, 46); TBar.BackgroundColor3 = Theme.PANEL; TBar.BorderSizePixel = 0; TBar.Parent = Main
+    mkCorner(TBar, 12)
+
+    local tGrad = Instance.new("UIGradient")
+    tGrad.Color = ColorSequence.new({ 
+        ColorSequenceKeypoint.new(0, Theme.ACCENT), 
+        ColorSequenceKeypoint.new(0.5, Theme.ACC2),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 90, 220)) 
+    })
+    tGrad.Rotation = 45; tGrad.Parent = TBar
+
+    local tLbl = mkLbl(TBar, "✨ CROTTT HUB v2.3", 13, true, Color3.new(1, 1, 1))
+    tLbl.Position = UDim2.new(0, 14, 0, 0); tLbl.Size = UDim2.new(1, -90, 1, 0)
+    tLbl.AutomaticSize = Enum.AutomaticSize.None; tLbl.TextYAlignment = Enum.TextYAlignment.Center
+
+    local minBtn = Instance.new("TextButton")
+    minBtn.Size = UDim2.new(0, 26, 0, 26); minBtn.Position = UDim2.new(1, -34, 0, 10)
+    minBtn.BackgroundColor3 = Theme.CARD; minBtn.BorderSizePixel = 0; minBtn.Text = "−"
+    minBtn.Font = Enum.Font.GothamBold; minBtn.TextSize = 14; minBtn.TextColor3 = Theme.TEXT; minBtn.Parent = Main
+    mkCorner(minBtn, 6)
+    UI.MinBtn = minBtn
+end
+
+-- Navigation Tabs
+local TabNav = Instance.new("Frame")
+TabNav.Size = UDim2.new(1, -16, 0, 32); TabNav.Position = UDim2.new(0, 8, 0, 52); TabNav.BackgroundColor3 = Theme.PANEL; TabNav.Parent = Main
+mkCorner(TabNav, 8); mkStroke(TabNav, Theme.BORDER, 1)
+
+local tabNavLayout = Instance.new("UIListLayout")
+tabNavLayout.FillDirection = Enum.FillDirection.Horizontal; tabNavLayout.Padding = UDim.new(0, 2); tabNavLayout.Parent = TabNav
+
+local function createTabBtn(txt, isDefault)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(0.2, -2, 1, 0); b.BackgroundColor3 = isDefault and Theme.SEL or Color3.fromRGB(0,0,0)
+    b.BackgroundTransparency = isDefault and 0 or 1; b.Text = txt; b.Font = Enum.Font.GothamBold; b.TextSize = 9.5
+    b.TextColor3 = isDefault and Theme.TEXT or Theme.MUTED; b.Parent = TabNav
+    mkCorner(b, 6)
+    return b
+end
+
+UI.TabBtns = {
+    createTabBtn("⚡ Collect", true),
+    createTabBtn("📊 Stats", false),
+    createTabBtn("🔮 Dupe", false),
+    createTabBtn("⭐ Fav", false),
+    createTabBtn("👤 Player", false)
+}
+
+local function createPage(name, barColor, isVisible)
+    local page = Instance.new("ScrollingFrame")
+    page.Name = name; page.Size = UDim2.new(1, -12, 1, -94); page.Position = UDim2.new(0, 6, 0, 90)
+    page.BackgroundTransparency = 1; page.ScrollBarThickness = 4; page.ScrollBarImageColor3 = barColor
+    page.BorderSizePixel = 0; page.CanvasSize = UDim2.new(0, 0, 0, 0); page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    page.Visible = isVisible; page.Parent = Main
+
+    local lay = Instance.new("UIListLayout"); lay.Padding = UDim.new(0, 8); lay.SortOrder = Enum.SortOrder.LayoutOrder; lay.Parent = page
+    local pad = Instance.new("UIPadding"); pad.PaddingTop = UDim.new(0, 4); pad.PaddingLeft = UDim.new(0, 4); pad.PaddingRight = UDim.new(0, 6); pad.PaddingBottom = UDim.new(0, 10); pad.Parent = page
+    return page
+end
+
+UI.Pages = {
+    createPage("CollectorPage", Theme.ACCENT, true),
+    createPage("TrackPage", Theme.ACC2, false),
+    createPage("DupePage", Theme.ACC3, false),
+    createPage("FavPage", Theme.ACC_FAV, false),
+    createPage("PlayerPage", Theme.ACC4, false)
+}
+
+local function switchTab(tabIndex)
+    for i, page in ipairs(UI.Pages) do page.Visible = (i == tabIndex) end
+    for i, btn in ipairs(UI.TabBtns) do
+        local isCur = (i == tabIndex)
+        btn.BackgroundColor3 = isCur and Theme.SEL or Color3.fromRGB(0,0,0)
+        btn.BackgroundTransparency = isCur and 0 or 1
+        btn.TextColor3 = isCur and Theme.TEXT or Theme.MUTED
+    end
+end
+
+for i, btn in ipairs(UI.TabBtns) do
+    btn.MouseButton1Click:Connect(function() switchTab(i) end)
+end
+
+-- ============================================================
+--  BUILD PAGES
+-- ============================================================
+local function buildCollectorPage(parent)
+    local startBtn = Instance.new("TextButton")
+    startBtn.Size = UDim2.new(1, 0, 0, 40); startBtn.BackgroundColor3 = Theme.GREEN; startBtn.BorderSizePixel = 0
+    startBtn.Text = "START AUTO COLLECT"; startBtn.Font = Enum.Font.GothamBold; startBtn.TextSize = 13
+    startBtn.TextColor3 = Color3.new(1, 1, 1); startBtn.LayoutOrder = 1; startBtn.Parent = parent
+    mkCorner(startBtn, 8)
+    UI.StartBtn = startBtn
+
+    startBtn.MouseButton1Click:Connect(function()
+        Config.Running = not Config.Running
+        if Config.Running then
+            startBtn.Text = "STOP AUTO COLLECT"
+            startBtn.BackgroundColor3 = Theme.RED
+            startLoop()
+        else
+            stopLoop()
+        end
+    end)
+
+    local statCard = Instance.new("Frame")
+    statCard.BackgroundColor3 = Theme.CARD; statCard.Size = UDim2.new(1, 0, 0, 52); statCard.LayoutOrder = 2; statCard.Parent = parent
+    mkCorner(statCard, 8); mkStroke(statCard, Theme.BORDER, 1)
+
+    local statPad = Instance.new("UIPadding")
+    statPad.PaddingLeft = UDim.new(0, 10); statPad.PaddingRight = UDim.new(0, 10); statPad.PaddingTop = UDim.new(0, 6); statPad.Parent = statCard
+
+    local statusLbl = mkLbl(statCard, "Status: IDLE (Siap)", 11, false, Theme.MUTED)
+    statusLbl.Size = UDim2.new(1, 0, 0, 18); statusLbl.AutomaticSize = Enum.AutomaticSize.None
+
+    local countLbl = mkLbl(statCard, "Terkumpul: 0  |  Terakhir: -", 11, true, Theme.ACCENT)
+    countLbl.Position = UDim2.new(0, 0, 0, 22); countLbl.Size = UDim2.new(1, 0, 0, 18); countLbl.AutomaticSize = Enum.AutomaticSize.None
+
+    RunService.Heartbeat:Connect(function()
+        statusLbl.Text = "Status: " .. Stats.StatusText
+        statusLbl.TextColor3 = Config.Running and Theme.GREEN or Theme.MUTED
+        if Config.LimitEnabled then
+            countLbl.Text = string.format("Terkumpul: %d / %d  |  Terakhir: %s", Stats.SessionCollected, Config.LimitAmount, Stats.LastCollected)
+        else
+            countLbl.Text = string.format("Terkumpul: %d Crystal  |  Terakhir: %s", Stats.TotalCollected, Stats.LastCollected)
+        end
+    end)
+
+    -- Limit Config
+    local limitSec = Instance.new("Frame")
+    limitSec.BackgroundColor3 = Theme.CARD; limitSec.Size = UDim2.new(1, 0, 0, 72); limitSec.LayoutOrder = 3; limitSec.Parent = parent
+    mkCorner(limitSec, 8); mkStroke(limitSec, Theme.BORDER, 1)
+    local limPad = Instance.new("UIPadding"); limPad.PaddingLeft = UDim.new(0, 10); limPad.PaddingRight = UDim.new(0, 10); limPad.PaddingTop = UDim.new(0, 6); limPad.Parent = limitSec
+
+    local limHeader = Instance.new("Frame"); limHeader.BackgroundTransparency = 1; limHeader.Size = UDim2.new(1, 0, 0, 20); limHeader.Parent = limitSec
+    local limTitle = mkLbl(limHeader, "🎯 Limit Pengambilan Crystal", 12, true, Theme.TEXT)
+    limTitle.Size = UDim2.new(1, -85, 1, 0); limTitle.AutomaticSize = Enum.AutomaticSize.None
+
+    local limitToggleBtn = Instance.new("TextButton")
+    limitToggleBtn.Size = UDim2.new(0, 80, 1, 0); limitToggleBtn.Position = UDim2.new(1, -80, 0, 0)
+    limitToggleBtn.BackgroundColor3 = Config.LimitEnabled and Theme.GREEN or Theme.PANEL
+    limitToggleBtn.Text = Config.LimitEnabled and "LIMIT: ON" or "LIMIT: OFF"
+    limitToggleBtn.Font = Enum.Font.GothamBold; limitToggleBtn.TextSize = 10; limitToggleBtn.TextColor3 = Color3.new(1, 1, 1)
+    limitToggleBtn.Parent = limHeader
+    mkCorner(limitToggleBtn, 5); mkStroke(limitToggleBtn, Theme.BORDER, 1)
+
+    local limBtnRow = Instance.new("Frame")
+    limBtnRow.BackgroundTransparency = 1; limBtnRow.Position = UDim2.new(0, 0, 0, 28); limBtnRow.Size = UDim2.new(1, 0, 0, 28); limBtnRow.Parent = limitSec
+    local limLayout = Instance.new("UIListLayout"); limLayout.FillDirection = Enum.FillDirection.Horizontal; limLayout.Padding = UDim.new(0, 4); limLayout.Parent = limBtnRow
+
+    local limitInputBox = Instance.new("TextBox")
+    local function refreshLimitBtns()
+        limitToggleBtn.BackgroundColor3 = Config.LimitEnabled and Theme.GREEN or Theme.PANEL
+        limitToggleBtn.Text = Config.LimitEnabled and "LIMIT: ON" or "LIMIT: OFF"
+        for _, ch in ipairs(limBtnRow:GetChildren()) do
+            if ch:IsA("TextButton") then
+                local isCur = (ch.Text == tostring(Config.LimitAmount))
+                ch.BackgroundColor3 = isCur and Theme.SEL or Theme.PANEL
+                ch.TextColor3 = isCur and Theme.TEXT or Theme.MUTED
+                local st = ch:FindFirstChildOfClass("UIStroke")
+                if st then st.Color = isCur and Theme.ACCENT or Theme.BORDER end
+            end
+        end
+    end
+
+    limitToggleBtn.MouseButton1Click:Connect(function()
+        Config.LimitEnabled = not Config.LimitEnabled
+        refreshLimitBtns()
+    end)
+
+    for _, limVal in ipairs({ 50, 100, 200, 500 }) do
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(0.2, -4, 1, 0); b.BackgroundColor3 = Config.LimitAmount == limVal and Theme.SEL or Theme.PANEL
+        b.Text = tostring(limVal); b.Font = Enum.Font.GothamBold; b.TextSize = 10
+        b.TextColor3 = Config.LimitAmount == limVal and Theme.TEXT or Theme.MUTED; b.Parent = limBtnRow
+        mkCorner(b, 5); mkStroke(b, Config.LimitAmount == limVal and Theme.ACCENT or Theme.BORDER, 1)
+
+        b.MouseButton1Click:Connect(function()
+            Config.LimitAmount = limVal
+            limitInputBox.Text = tostring(limVal)
+            refreshLimitBtns()
+        end)
+    end
+
+    limitInputBox.Size = UDim2.new(0.2, -4, 1, 0); limitInputBox.BackgroundColor3 = Theme.PANEL; limitInputBox.PlaceholderText = "Custom"
+    limitInputBox.PlaceholderColor3 = Theme.MUTED; limitInputBox.Text = tostring(Config.LimitAmount); limitInputBox.Font = Enum.Font.GothamBold
+    limitInputBox.TextSize = 10; limitInputBox.TextColor3 = Theme.TEXT; limitInputBox.ClearTextOnFocus = false; limitInputBox.Parent = limBtnRow
+    mkCorner(limitInputBox, 5); mkStroke(limitInputBox, Theme.BORDER, 1)
+
+    limitInputBox:GetPropertyChangedSignal("Text"):Connect(function()
+        local n = tonumber(limitInputBox.Text)
+        if n and n > 0 then Config.LimitAmount = math.floor(n); refreshLimitBtns() end
+    end)
+
+    -- Filter Nama
+    local nameSec = Instance.new("Frame")
+    nameSec.BackgroundColor3 = Theme.CARD; nameSec.Size = UDim2.new(1, 0, 0, 105); nameSec.LayoutOrder = 4; nameSec.Parent = parent
+    mkCorner(nameSec, 8); mkStroke(nameSec, Theme.BORDER, 1)
+    local namePad = Instance.new("UIPadding"); namePad.PaddingLeft = UDim.new(0, 10); namePad.PaddingRight = UDim.new(0, 10); namePad.PaddingTop = UDim.new(0, 6); namePad.Parent = nameSec
+
+    local nTitle = mkLbl(nameSec, "Filter Nama Crystal", 12, true, Theme.TEXT)
+    nTitle.Size = UDim2.new(1, 0, 0, 18); nTitle.AutomaticSize = Enum.AutomaticSize.None
+
+    local modeRow = Instance.new("Frame")
+    modeRow.BackgroundTransparency = 1; modeRow.Position = UDim2.new(0, 0, 0, 24); modeRow.Size = UDim2.new(1, 0, 0, 26); modeRow.Parent = nameSec
+    local mList = Instance.new("UIListLayout"); mList.FillDirection = Enum.FillDirection.Horizontal; mList.Padding = UDim.new(0, 6); mList.Parent = modeRow
+
+    local modeButtons = {}
+    for _, m in ipairs({ { id = "ALL", label = "Semua" }, { id = "WHITELIST", label = "Whitelist" }, { id = "BLACKLIST", label = "Blacklist" } }) do
+        local mb = Instance.new("TextButton")
+        mb.Size = UDim2.new(0.333, -4, 1, 0); mb.BackgroundColor3 = Config.NameFilterMode == m.id and Theme.SEL or Theme.PANEL
+        mb.Text = m.label; mb.Font = Enum.Font.GothamBold; mb.TextSize = 10; mb.TextColor3 = Config.NameFilterMode == m.id and Theme.TEXT or Theme.MUTED; mb.Parent = modeRow
+        mkCorner(mb, 6); mkStroke(mb, Config.NameFilterMode == m.id and Theme.ACCENT or Theme.BORDER, 1)
+        modeButtons[m.id] = mb
+
+        mb.MouseButton1Click:Connect(function()
+            Config.NameFilterMode = m.id
+            for k, btn in pairs(modeButtons) do
+                local isCur = (k == m.id)
+                btn.BackgroundColor3 = isCur and Theme.SEL or Theme.PANEL
+                btn.TextColor3 = isCur and Theme.TEXT or Theme.MUTED
+                local st = btn:FindFirstChildOfClass("UIStroke")
+                if st then st.Color = isCur and Theme.ACCENT or Theme.BORDER end
+            end
+        end)
+    end
+
+    local nameInputBox = Instance.new("TextBox")
+    nameInputBox.Position = UDim2.new(0, 0, 0, 56); nameInputBox.Size = UDim2.new(1, 0, 0, 32); nameInputBox.BackgroundColor3 = Theme.PANEL
+    nameInputBox.PlaceholderText = "Ketik nama crystal (cth: Verdance, Terminus)..."; nameInputBox.PlaceholderColor3 = Theme.MUTED; nameInputBox.Text = Config.NameFilterText
+    nameInputBox.Font = Enum.Font.Gotham; nameInputBox.TextSize = 11; nameInputBox.TextColor3 = Theme.TEXT; nameInputBox.ClearTextOnFocus = false; nameInputBox.Parent = nameSec
+    mkCorner(nameInputBox, 6); mkStroke(nameInputBox, Theme.BORDER, 1)
+    nameInputBox:GetPropertyChangedSignal("Text"):Connect(function() Config.NameFilterText = nameInputBox.Text; updateParsedNameList() end)
+
+    -- Filter Rarity
+    local rarSec = Instance.new("Frame")
+    rarSec.BackgroundColor3 = Theme.CARD; rarSec.Size = UDim2.new(1, 0, 0, 175); rarSec.LayoutOrder = 5; rarSec.Parent = parent
+    mkCorner(rarSec, 8); mkStroke(rarSec, Theme.BORDER, 1)
+    local rarPad = Instance.new("UIPadding"); rarPad.PaddingLeft = UDim.new(0, 10); rarPad.PaddingRight = UDim.new(0, 10); rarPad.PaddingTop = UDim.new(0, 6); rarPad.Parent = rarSec
+
+    local rTitle = mkLbl(rarSec, "Filter Rarity Crystal ", 12, true, Theme.TEXT)
+    rTitle.Size = UDim2.new(1, -120, 0, 18); rTitle.AutomaticSize = Enum.AutomaticSize.None
+
+    local quickRow = Instance.new("Frame")
+    quickRow.BackgroundTransparency = 1; quickRow.Position = UDim2.new(0, 0, 0, 24); quickRow.Size = UDim2.new(1, 0, 0, 24); quickRow.Parent = rarSec
+    local qList = Instance.new("UIListLayout"); qList.FillDirection = Enum.FillDirection.Horizontal; qList.Padding = UDim.new(0, 6); qList.Parent = quickRow
+
+    local rarButtons = {}
+    local function refreshRarButtons()
+        for id, btn in pairs(rarButtons) do
+            local enabled = Config.EnabledRarities[id]
+            btn.BackgroundColor3 = enabled and Theme.SEL or Theme.PANEL
+            btn.TextColor3 = enabled and (RarityColors[id] or Theme.TEXT) or Theme.MUTED
+            local st = btn:FindFirstChildOfClass("UIStroke")
+            if st then st.Color = enabled and (RarityColors[id] or Theme.ACCENT) or Theme.BORDER end
+        end
+    end
+
+    local function mkQuick(txt, cb)
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(0.333, -4, 1, 0); b.BackgroundColor3 = Theme.PANEL; b.Text = txt; b.Font = Enum.Font.GothamBold; b.TextSize = 9; b.TextColor3 = Theme.TEXT; b.Parent = quickRow
+        mkCorner(b, 5); mkStroke(b, Theme.BORDER, 1); b.MouseButton1Click:Connect(cb)
+    end
+    mkQuick("Semua ON", function() for k in pairs(Config.EnabledRarities) do Config.EnabledRarities[k] = true end; refreshRarButtons() end)
+    mkQuick("Semua OFF", function() for k in pairs(Config.EnabledRarities) do Config.EnabledRarities[k] = false end; refreshRarButtons() end)
+    mkQuick("Mythic+", function()
+        for k in pairs(Config.EnabledRarities) do Config.EnabledRarities[k] = false end
+        Config.EnabledRarities["MYTHIC"] = true; Config.EnabledRarities["EMPYREAN"] = true
+        Config.EnabledRarities["PULSAR"] = true; Config.EnabledRarities["QUASAR"] = true; Config.EnabledRarities["SECRET"] = true
+        refreshRarButtons()
+    end)
+
+    local rarGrid = Instance.new("Frame")
+    rarGrid.BackgroundTransparency = 1; rarGrid.Position = UDim2.new(0, 0, 0, 54); rarGrid.Size = UDim2.new(1, 0, 0, 110); rarGrid.Parent = rarSec
+    local rGLay = Instance.new("UIGridLayout"); rGLay.CellSize = UDim2.new(0.333, -4, 0, 24); rGLay.CellPadding = UDim2.new(0, 4, 0, 4); rGLay.Parent = rarGrid
+
+    for _, rItem in ipairs({
+        { id = "COMMON", name = "Common" }, { id = "UNCOMMON", name = "Uncommon" },
+        { id = "RARE", name = "Rare" }, { id = "EPIC", name = "Epic" },
+        { id = "LEGENDARY", name = "Legendary" }, { id = "MYTHIC", name = "Mythic" },
+        { id = "EMPYREAN", name = "Empyrean" }, { id = "PULSAR", name = "Pulsar" },
+        { id = "QUASAR", name = "Quasar" }, { id = "SECRET", name = "Secret" },
+    }) do
+        local rBtn = Instance.new("TextButton")
+        local col = RarityColors[rItem.id] or Theme.TEXT
+        rBtn.BackgroundColor3 = Config.EnabledRarities[rItem.id] and Theme.SEL or Theme.PANEL
+        rBtn.Text = rItem.name; rBtn.Font = Enum.Font.GothamBold; rBtn.TextSize = 10
+        rBtn.TextColor3 = Config.EnabledRarities[rItem.id] and col or Theme.MUTED; rBtn.Parent = rarGrid
+        mkCorner(rBtn, 6); mkStroke(rBtn, Config.EnabledRarities[rItem.id] and col or Theme.BORDER, 1)
+        rarButtons[rItem.id] = rBtn
+        rBtn.MouseButton1Click:Connect(function()
+            Config.EnabledRarities[rItem.id] = not Config.EnabledRarities[rItem.id]
+            refreshRarButtons()
+        end)
+    end
+
+    -- Radius Presets
+    local radSec = Instance.new("Frame")
+    radSec.BackgroundColor3 = Theme.CARD; radSec.Size = UDim2.new(1, 0, 0, 68); radSec.LayoutOrder = 6; radSec.Parent = parent
+    mkCorner(radSec, 8); mkStroke(radSec, Theme.BORDER, 1)
+    local radPad = Instance.new("UIPadding"); radPad.PaddingLeft = UDim.new(0, 10); radPad.PaddingRight = UDim.new(0, 10); radPad.PaddingTop = UDim.new(0, 6); radPad.Parent = radSec
+
+    local radTitle = mkLbl(radSec, "Batasan Radius: " .. Config.MaxStuds .. " Studs", 12, true, Theme.TEXT)
+    radTitle.Size = UDim2.new(1, 0, 0, 18); radTitle.AutomaticSize = Enum.AutomaticSize.None
+
+    local radBtnRow = Instance.new("Frame")
+    radBtnRow.BackgroundTransparency = 1; radBtnRow.Position = UDim2.new(0, 0, 0, 26); radBtnRow.Size = UDim2.new(1, 0, 0, 28); radBtnRow.Parent = radSec
+    local rList = Instance.new("UIListLayout"); rList.FillDirection = Enum.FillDirection.Horizontal; rList.Padding = UDim.new(0, 5); rList.Parent = radBtnRow
+
+    for _, rVal in ipairs({ 25, 50, 100, 200, 500 }) do
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(0.2, -4, 1, 0); b.BackgroundColor3 = Config.MaxStuds == rVal and Theme.SEL or Theme.PANEL
+        b.Text = tostring(rVal) .. "s"; b.Font = Enum.Font.GothamBold; b.TextSize = 10
+        b.TextColor3 = Config.MaxStuds == rVal and Theme.TEXT or Theme.MUTED; b.Parent = radBtnRow
+        mkCorner(b, 6); mkStroke(b, Config.MaxStuds == rVal and Theme.ACCENT or Theme.BORDER, 1)
+
+        b.MouseButton1Click:Connect(function()
+            Config.MaxStuds = rVal
+            radTitle.Text = "Batasan Radius: " .. Config.MaxStuds .. " Studs"
+            for _, sibling in ipairs(radBtnRow:GetChildren()) do
+                if sibling:IsA("TextButton") then
+                    local isCur = (sibling.Text == tostring(rVal) .. "s")
+                    sibling.BackgroundColor3 = isCur and Theme.SEL or Theme.PANEL
+                    sibling.TextColor3 = isCur and Theme.TEXT or Theme.MUTED
+                    local st = sibling:FindFirstChildOfClass("UIStroke")
+                    if st then st.Color = isCur and Theme.ACCENT or Theme.BORDER end
+                end
+            end
+        end)
+    end
+
+    -- Activity Log
+    local logSec = Instance.new("Frame")
+    logSec.BackgroundColor3 = Theme.CARD; logSec.Size = UDim2.new(1, 0, 0, 95); logSec.LayoutOrder = 7; logSec.Parent = parent
+    mkCorner(logSec, 8); mkStroke(logSec, Theme.BORDER, 1)
+    local logPad = Instance.new("UIPadding"); logPad.PaddingLeft = UDim.new(0, 8); logPad.PaddingRight = UDim.new(0, 8); logPad.PaddingTop = UDim.new(0, 6); logPad.PaddingBottom = UDim.new(0, 6); logPad.Parent = logSec
+
+    local lTitle = mkLbl(logSec, "Activity Log (Terbaru)", 11, true, Theme.MUTED)
+    lTitle.Size = UDim2.new(1, 0, 0, 14); lTitle.AutomaticSize = Enum.AutomaticSize.None
+
+    local logScroll = Instance.new("ScrollingFrame")
+    logScroll.Position = UDim2.new(0, 0, 0, 18); logScroll.Size = UDim2.new(1, 0, 1, -18); logScroll.BackgroundTransparency = 1
+    logScroll.ScrollBarThickness = 2; logScroll.BorderSizePixel = 0; logScroll.CanvasSize = UDim2.new(0, 0, 0, 0); logScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y; logScroll.Parent = logSec
+    local logList = Instance.new("UIListLayout"); logList.Padding = UDim.new(0, 2); logList.SortOrder = Enum.SortOrder.LayoutOrder; logList.Parent = logScroll
+
+    local logLabels = {}
+    RunService.Heartbeat:Connect(function()
+        local logs = _G.CrystalCollectLogs or {}
+        for i = 1, 5 do
+            if not logLabels[i] then
+                local lbl = Instance.new("TextLabel")
+                lbl.BackgroundTransparency = 1; lbl.Size = UDim2.new(1, 0, 0, 13); lbl.Font = Enum.Font.Code
+                lbl.TextSize = 10; lbl.TextColor3 = Theme.MUTED; lbl.TextXAlignment = Enum.TextXAlignment.Left
+                lbl.TextTruncate = Enum.TextTruncate.AtEnd; lbl.LayoutOrder = i; lbl.Parent = logScroll
+                logLabels[i] = lbl
+            end
+            local logText = logs[i] or ""
+            logLabels[i].Text = logText
+            if logText:find("QUASAR") then logLabels[i].TextColor3 = RarityColors["QUASAR"]
+            elseif logText:find("PULSAR") then logLabels[i].TextColor3 = RarityColors["PULSAR"]
+            elseif logText:find("EMPYREAN") then logLabels[i].TextColor3 = RarityColors["EMPYREAN"]
+            elseif logText:find("MYTHIC") then logLabels[i].TextColor3 = RarityColors["MYTHIC"]
+            elseif logText:find("LEGENDARY") then logLabels[i].TextColor3 = RarityColors["LEGENDARY"]
+            elseif logText:find("EPIC") then logLabels[i].TextColor3 = RarityColors["EPIC"]
+            elseif logText:find("RARE") then logLabels[i].TextColor3 = RarityColors["RARE"]
+            else logLabels[i].TextColor3 = Theme.MUTED end
+        end
+    end)
+end
+
+local function buildTrackPage(parent)
+    local sessCard = Instance.new("Frame")
+    sessCard.BackgroundColor3 = Theme.CARD; sessCard.Size = UDim2.new(1, 0, 0, 96); sessCard.LayoutOrder = 1; sessCard.Parent = parent
+    mkCorner(sessCard, 8); mkStroke(sessCard, Theme.BORDER, 1)
+    local sPad = Instance.new("UIPadding"); sPad.PaddingLeft = UDim.new(0, 10); sPad.PaddingRight = UDim.new(0, 10); sPad.PaddingTop = UDim.new(0, 8); sPad.Parent = sessCard
+
+    local sTitle = mkLbl(sessCard, "⏱️ Statistik Sesi Pengambilan", 12, true, Theme.TEXT)
+    sTitle.Size = UDim2.new(1, 0, 0, 16); sTitle.AutomaticSize = Enum.AutomaticSize.None
+
+    local sessInfoLbl = mkLbl(sessCard, "Durasi: 00:00:00  |  Kecepatan: 0/menit", 11, false, Theme.MUTED)
+    sessInfoLbl.Position = UDim2.new(0, 0, 0, 22); sessInfoLbl.Size = UDim2.new(1, 0, 0, 16); sessInfoLbl.AutomaticSize = Enum.AutomaticSize.None
+
+    local sessTrophyLbl = mkLbl(sessCard, "Total Diambil: 0 Crystal", 12, true, Theme.ACCENT)
+    sessTrophyLbl.Position = UDim2.new(0, 0, 0, 42); sessTrophyLbl.Size = UDim2.new(1, 0, 0, 18); sessTrophyLbl.AutomaticSize = Enum.AutomaticSize.None
+
+    local sessBreakdownLbl = mkLbl(sessCard, "Top Drops: -", 10, false, Color3.fromRGB(216, 180, 254))
+    sessBreakdownLbl.Position = UDim2.new(0, 0, 0, 64); sessBreakdownLbl.Size = UDim2.new(1, 0, 0, 16); sessBreakdownLbl.AutomaticSize = Enum.AutomaticSize.None
+
+    RunService.Heartbeat:Connect(function()
+        if Stats.SessionStartTime and Config.Running then
+            local elapsed = os.time() - Stats.SessionStartTime
+            local hours = math.floor(elapsed / 3600); local mins = math.floor((elapsed % 3600) / 60); local secs = elapsed % 60
+            local rate = (elapsed > 0) and math.floor((Stats.SessionCollected / (elapsed / 60)) * 10) / 10 or 0
+            sessInfoLbl.Text = string.format("Durasi: %02d:%02d:%02d  |  Kecepatan: %.1f/mnt", hours, mins, secs, rate)
+            sessTrophyLbl.Text = string.format("Total Diambil Sesi Ini: %d Crystal", Stats.SessionCollected)
+
+            local topStr = {}
+            for _, rKey in ipairs({"QUASAR", "PULSAR", "EMPYREAN", "MYTHIC", "LEGENDARY"}) do
+                local count = Stats.CollectedByRarity[rKey] or 0
+                if count > 0 then table.insert(topStr, string.format("%s: %d", rKey:sub(1,1) .. rKey:sub(2):lower(), count)) end
+            end
+            sessBreakdownLbl.Text = #topStr > 0 and ("Top Drops: " .. table.concat(topStr, " | ")) or "Top Drops: Menunggu drop tier tinggi..."
+        else
+            sessInfoLbl.Text = "Durasi: 00:00:00  |  Kecepatan: 0/mnt"
+            sessTrophyLbl.Text = string.format("Total Diambil Sesi Ini: %d Crystal", Stats.SessionCollected)
+        end
+    end)
+
+    -- Backpack Frame
+    local bpSec = Instance.new("Frame")
+    bpSec.BackgroundColor3 = Theme.CARD; bpSec.Size = UDim2.new(1, 0, 0, 310); bpSec.LayoutOrder = 2; bpSec.Parent = parent
+    mkCorner(bpSec, 8); mkStroke(bpSec, Theme.BORDER, 1)
+    local bpPad = Instance.new("UIPadding"); bpPad.PaddingLeft = UDim.new(0, 10); bpPad.PaddingRight = UDim.new(0, 10); bpPad.PaddingTop = UDim.new(0, 8); bpPad.Parent = bpSec
+
+    local bpHeader = Instance.new("Frame"); bpHeader.BackgroundTransparency = 1; bpHeader.Size = UDim2.new(1, 0, 0, 20); bpHeader.Parent = bpSec
+    local bpTitle = mkLbl(bpHeader, "🎒 Isi Tas / Backpack (Live)", 12, true, Theme.TEXT)
+    bpTitle.Size = UDim2.new(1, -70, 1, 0); bpTitle.AutomaticSize = Enum.AutomaticSize.None
+
+    local refreshBpBtn = Instance.new("TextButton")
+    refreshBpBtn.Size = UDim2.new(0, 65, 1, 0); refreshBpBtn.Position = UDim2.new(1, -65, 0, 0)
+    refreshBpBtn.BackgroundColor3 = Theme.PANEL; refreshBpBtn.Text = "🔄 Refresh"; refreshBpBtn.Font = Enum.Font.GothamBold; refreshBpBtn.TextSize = 10
+    refreshBpBtn.TextColor3 = Theme.ACC2; refreshBpBtn.Parent = bpHeader
+    mkCorner(refreshBpBtn, 5); mkStroke(refreshBpBtn, Theme.BORDER, 1)
+
+    local bpSummaryLbl = mkLbl(bpSec, "Memindai tas...", 11, true, Color3.fromRGB(74, 222, 128))
+    bpSummaryLbl.Position = UDim2.new(0, 0, 0, 24); bpSummaryLbl.Size = UDim2.new(1, 0, 0, 16); bpSummaryLbl.AutomaticSize = Enum.AutomaticSize.None
+
+    local bpSearchBox = Instance.new("TextBox")
+    bpSearchBox.Position = UDim2.new(0, 0, 0, 44); bpSearchBox.Size = UDim2.new(1, 0, 0, 26); bpSearchBox.BackgroundColor3 = Theme.PANEL
+    bpSearchBox.PlaceholderText = "🔍 Cari crystal di tas (cth: Verdance, Terminus, XL)..."; bpSearchBox.PlaceholderColor3 = Theme.MUTED; bpSearchBox.Text = ""
+    bpSearchBox.Font = Enum.Font.Gotham; bpSearchBox.TextSize = 11; bpSearchBox.TextColor3 = Theme.TEXT; bpSearchBox.ClearTextOnFocus = false; bpSearchBox.Parent = bpSec
+    mkCorner(bpSearchBox, 6); mkStroke(bpSearchBox, Theme.BORDER, 1)
+
+    local bpScroll = Instance.new("ScrollingFrame")
+    bpScroll.Position = UDim2.new(0, 0, 0, 76); bpScroll.Size = UDim2.new(1, 0, 1, -82); bpScroll.BackgroundTransparency = 1
+    bpScroll.ScrollBarThickness = 3; bpScroll.ScrollBarImageColor3 = Theme.ACC2; bpScroll.BorderSizePixel = 0; bpScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    bpScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y; bpScroll.Parent = bpSec
+    local bpListLay = Instance.new("UIListLayout"); bpListLay.Padding = UDim.new(0, 4); bpListLay.SortOrder = Enum.SortOrder.LayoutOrder; bpListLay.Parent = bpScroll
+
+    local function renderBackpackList()
+        local inv = scanBackpack()
+        local searchQ = bpSearchBox.Text:gsub("^%s+", ""):gsub("%s+$", ""):lower()
+
+        local sumParts = {}
+        for _, rk in ipairs({"QUASAR", "PULSAR", "EMPYREAN", "MYTHIC", "LEGENDARY"}) do
+            local c = inv.ByRarity[rk] or 0
+            if c > 0 then table.insert(sumParts, string.format("%s: %d", rk:sub(1,1)..rk:sub(2):lower(), c)) end
+        end
+        bpSummaryLbl.Text = string.format("Total di Tas: %d Crystal (%s)", inv.Total, #sumParts > 0 and table.concat(sumParts, ", ") or "Kosong/Common")
+
+        for _, ch in ipairs(bpScroll:GetChildren()) do
+            if ch:IsA("Frame") then ch:Destroy() end
+        end
+
+        local displayCount = 0
+        for i, itemData in ipairs(inv.List) do
+            local matchesText = (searchQ == "") or itemData.Name:lower():find(searchQ, 1, true) or itemData.Rarity:lower():find(searchQ, 1, true) or itemData.Size:lower():find(searchQ, 1, true)
+            if matchesText then
+                displayCount = displayCount + 1
+                local row = Instance.new("Frame")
+                row.Size = UDim2.new(1, 0, 0, 26); row.BackgroundColor3 = Theme.PANEL; row.LayoutOrder = i; row.Parent = bpScroll
+                mkCorner(row, 5)
+
+                local rBadge = Instance.new("Frame")
+                rBadge.Size = UDim2.new(0, 68, 1, -4); rBadge.Position = UDim2.new(0, 2, 0, 2); rBadge.BackgroundColor3 = Theme.CARD; rBadge.Parent = row
+                mkCorner(rBadge, 4)
+
+                local rBadgeLbl = mkLbl(rBadge, itemData.Rarity, 9, true, RarityColors[itemData.Rarity] or Theme.TEXT, Enum.TextXAlignment.Center)
+                rBadgeLbl.Size = UDim2.new(1, 0, 1, 0); rBadgeLbl.AutomaticSize = Enum.AutomaticSize.None
+
+                local nameStr = itemData.Name
+                if itemData.HasLuck then
+                    nameStr = nameStr .. string.format(" 🍀[%s Luck]", itemData.LuckDisplay)
+                end
+
+                local nameLbl = mkLbl(row, nameStr, 10.5, false, itemData.HasLuck and Color3.fromRGB(253, 224, 71) or Theme.TEXT)
+                nameLbl.Position = UDim2.new(0, 76, 0, 0); nameLbl.Size = UDim2.new(1, -125, 1, 0); nameLbl.TextTruncate = Enum.TextTruncate.AtEnd; nameLbl.AutomaticSize = Enum.AutomaticSize.None
+
+                local countBadge = mkLbl(row, "x" .. tostring(itemData.Count), 11, true, Color3.fromRGB(74, 222, 128), Enum.TextXAlignment.Right)
+                countBadge.Position = UDim2.new(1, -44, 0, 0); countBadge.Size = UDim2.new(0, 38, 1, 0); countBadge.AutomaticSize = Enum.AutomaticSize.None
+            end
+        end
+
+        if displayCount == 0 then
+            local emptyLbl = mkLbl(bpScroll, searchQ == "" and "Tas Anda sedang kosong..." or "Tidak ada crystal yang cocok.", 11, false, Theme.MUTED, Enum.TextXAlignment.Center)
+            emptyLbl.Size = UDim2.new(1, 0, 0, 30); emptyLbl.AutomaticSize = Enum.AutomaticSize.None
+        end
+    end
+
+    refreshBpBtn.MouseButton1Click:Connect(renderBackpackList)
+    bpSearchBox:GetPropertyChangedSignal("Text"):Connect(renderBackpackList)
+    UI.RenderBackpack = renderBackpackList
+end
+
+local function buildDupePage(parent)
+    local resetSec = Instance.new("Frame")
+    resetSec.BackgroundColor3 = Theme.CARD; resetSec.Size = UDim2.new(1, 0, 0, 72); resetSec.LayoutOrder = 1; resetSec.Parent = parent
+    mkCorner(resetSec, 8); mkStroke(resetSec, Theme.BORDER, 1)
+    local resPad = Instance.new("UIPadding"); resPad.PaddingLeft = UDim.new(0, 10); resPad.PaddingRight = UDim.new(0, 10); resPad.PaddingTop = UDim.new(0, 8); resPad.Parent = resetSec
+
+    local resTitle = mkLbl(resetSec, "💀 Fast Crystal Reset (BreakJoints)", 12, true, Theme.TEXT)
+    resTitle.Size = UDim2.new(1, 0, 0, 16); resTitle.AutomaticSize = Enum.AutomaticSize.None
+
+    local resetCharBtn = Instance.new("TextButton")
+    resetCharBtn.Size = UDim2.new(1, 0, 0, 32); resetCharBtn.Position = UDim2.new(0, 0, 0, 24); resetCharBtn.BackgroundColor3 = Color3.fromRGB(159, 18, 57)
+    resetCharBtn.Text = "RESET CHARACTER (CRYSTAL)"; resetCharBtn.Font = Enum.Font.GothamBold; resetCharBtn.TextSize = 11; resetCharBtn.TextColor3 = Color3.new(1, 1, 1); resetCharBtn.Parent = resetSec
+    mkCorner(resetCharBtn, 6)
+    resetCharBtn.MouseButton1Click:Connect(triggerCrystalReset)
+
+    local dupeSec = Instance.new("Frame")
+    dupeSec.BackgroundColor3 = Theme.CARD; dupeSec.Size = UDim2.new(1, 0, 0, 275); dupeSec.LayoutOrder = 2; dupeSec.Parent = parent
+    mkCorner(dupeSec, 8); mkStroke(dupeSec, Theme.BORDER, 1)
+    local dPad = Instance.new("UIPadding"); dPad.PaddingLeft = UDim.new(0, 10); dPad.PaddingRight = UDim.new(0, 10); dPad.PaddingTop = UDim.new(0, 8); dPad.Parent = dupeSec
+
+    local dTitle = mkLbl(dupeSec, "⚡ Rune Drop Request Spammer", 12, true, Theme.TEXT)
+    dTitle.Size = UDim2.new(1, 0, 0, 16); dTitle.AutomaticSize = Enum.AutomaticSize.None
+
+    local dQuickRow = Instance.new("Frame")
+    dQuickRow.BackgroundTransparency = 1; dQuickRow.Position = UDim2.new(0, 0, 0, 24); dQuickRow.Size = UDim2.new(1, 0, 0, 26); dQuickRow.Parent = dupeSec
+    local dqList = Instance.new("UIListLayout"); dqList.FillDirection = Enum.FillDirection.Horizontal; dqList.Padding = UDim.new(0, 6); dqList.Parent = dQuickRow
+
+    local runeBtnRefs = {}
+    local function refreshRuneButtons()
+        for remoteName, btn in pairs(runeBtnRefs) do
+            local isSel = DupeState.SelectedRunes[remoteName]
+            btn.BackgroundColor3 = isSel and Color3.fromRGB(125, 82, 205) or Theme.PANEL
+            btn.TextColor3 = isSel and Color3.new(1, 1, 1) or Theme.MUTED
+            local st = btn:FindFirstChildOfClass("UIStroke")
+            if st then st.Color = isSel and Color3.fromRGB(220, 205, 255) or Theme.BORDER end
+        end
+    end
+
+    local selAll = Instance.new("TextButton")
+    selAll.Size = UDim2.new(0.5, -3, 1, 0); selAll.BackgroundColor3 = Color3.fromRGB(88, 62, 155); selAll.Text = "SELECT ALL"
+    selAll.Font = Enum.Font.GothamBold; selAll.TextSize = 10; selAll.TextColor3 = Color3.new(1, 1, 1); selAll.Parent = dQuickRow
+    mkCorner(selAll, 5); selAll.MouseButton1Click:Connect(function() for k in pairs(DupeState.SelectedRunes) do DupeState.SelectedRunes[k] = true end; refreshRuneButtons() end)
+
+    local deselAll = Instance.new("TextButton")
+    deselAll.Size = UDim2.new(0.5, -3, 1, 0); deselAll.BackgroundColor3 = Theme.PANEL; deselAll.Text = "DESELECT ALL"
+    deselAll.Font = Enum.Font.GothamBold; deselAll.TextSize = 10; deselAll.TextColor3 = Theme.TEXT; deselAll.Parent = dQuickRow
+    mkCorner(deselAll, 5); mkStroke(deselAll, Theme.BORDER, 1)
+    deselAll.MouseButton1Click:Connect(function() for k in pairs(DupeState.SelectedRunes) do DupeState.SelectedRunes[k] = false end; refreshRuneButtons() end)
+
+    local runeGrid = Instance.new("Frame")
+    runeGrid.BackgroundTransparency = 1; runeGrid.Position = UDim2.new(0, 0, 0, 54); runeGrid.Size = UDim2.new(1, 0, 0, 115); runeGrid.Parent = dupeSec
+    local rgLay = Instance.new("UIGridLayout"); rgLay.CellSize = UDim2.new(0.333, -4, 0, 32); rgLay.CellPadding = UDim2.new(0, 4, 0, 6); rgLay.Parent = runeGrid
+
+    for _, runeData in ipairs(RuneList) do
+        local rBtn = Instance.new("TextButton")
+        rBtn.BackgroundColor3 = Theme.PANEL; rBtn.Text = runeData.display; rBtn.Font = Enum.Font.GothamBold; rBtn.TextSize = 10
+        rBtn.TextColor3 = Theme.MUTED; rBtn.Parent = runeGrid
+        mkCorner(rBtn, 6); mkStroke(rBtn, Theme.BORDER, 1)
+        runeBtnRefs[runeData.remote] = rBtn
+
+        rBtn.MouseButton1Click:Connect(function()
+            DupeState.SelectedRunes[runeData.remote] = not DupeState.SelectedRunes[runeData.remote]
+            refreshRuneButtons()
+        end)
+    end
+
+    local runDupeBtn = Instance.new("TextButton")
+    runDupeBtn.Size = UDim2.new(1, 0, 0, 38); runDupeBtn.Position = UDim2.new(0, 0, 0, 180); runDupeBtn.BackgroundColor3 = Color3.fromRGB(124, 58, 237)
+    runDupeBtn.Text = "RUN DUPE RUNES"; runDupeBtn.Font = Enum.Font.GothamBold; runDupeBtn.TextSize = 12; runDupeBtn.TextColor3 = Color3.new(1, 1, 1); runDupeBtn.Parent = dupeSec
+    mkCorner(runDupeBtn, 8)
+
+    local dupeStatusLbl = mkLbl(dupeSec, "Status: IDLE  |  Requests: 0", 11, false, Theme.MUTED, Enum.TextXAlignment.Center)
+    dupeStatusLbl.Position = UDim2.new(0, 0, 0, 226); dupeStatusLbl.Size = UDim2.new(1, 0, 0, 18); dupeStatusLbl.AutomaticSize = Enum.AutomaticSize.None
+
+    runDupeBtn.MouseButton1Click:Connect(function()
+        if DupeState.Running then
+            stopDupeLoop()
+            runDupeBtn.Text = "RUN DUPE RUNES"
+            runDupeBtn.BackgroundColor3 = Color3.fromRGB(124, 58, 237)
+        else
+            startDupeLoop()
+            runDupeBtn.Text = "STOP DUPE RUNES"
+            runDupeBtn.BackgroundColor3 = Theme.RED
+        end
+    end)
+
+    RunService.Heartbeat:Connect(function()
+        if DupeState.Running then
+            dupeStatusLbl.Text = string.format("Status: SPAMMING... | Total Requests: %d", DupeState.RequestCount)
+            dupeStatusLbl.TextColor3 = Color3.fromRGB(74, 222, 128)
+        else
+            dupeStatusLbl.Text = string.format("Status: IDLE | Total Requests: %d", DupeState.RequestCount)
+            dupeStatusLbl.TextColor3 = Theme.MUTED
+        end
+    end)
+end
+
+local function buildFavPage(parent)
+    local favHead = Instance.new("Frame")
+    favHead.BackgroundColor3 = Theme.CARD; favHead.Size = UDim2.new(1, 0, 0, 85); favHead.LayoutOrder = 1; favHead.Parent = parent
+    mkCorner(favHead, 8); mkStroke(favHead, Theme.BORDER, 1)
+    local favHeadPad = Instance.new("UIPadding"); favHeadPad.PaddingLeft = UDim.new(0, 10); favHeadPad.PaddingRight = UDim.new(0, 10); favHeadPad.PaddingTop = UDim.new(0, 8); favHeadPad.Parent = favHead
+
+    local fTitle = mkLbl(favHead, "⭐ Pengaturan Favorite & Luck Crystal", 12, true, Theme.TEXT)
+    fTitle.Size = UDim2.new(1, 0, 0, 16); fTitle.AutomaticSize = Enum.AutomaticSize.None
+
+    local favQuickRow = Instance.new("Frame")
+    favQuickRow.BackgroundTransparency = 1; favQuickRow.Position = UDim2.new(0, 0, 0, 24); favQuickRow.Size = UDim2.new(1, 0, 0, 26); favQuickRow.Parent = favHead
+    local fqList = Instance.new("UIListLayout"); fqList.FillDirection = Enum.FillDirection.Horizontal; fqList.Padding = UDim.new(0, 6); fqList.Parent = favQuickRow
+
+    local favAllBtn = Instance.new("TextButton")
+    favAllBtn.Size = UDim2.new(0.5, -3, 1, 0); favAllBtn.BackgroundColor3 = Color3.fromRGB(202, 138, 4)
+    favAllBtn.Text = "⭐ FAVORITE SEMUA"; favAllBtn.Font = Enum.Font.GothamBold; favAllBtn.TextSize = 10; favAllBtn.TextColor3 = Color3.new(1, 1, 1); favAllBtn.Parent = favQuickRow
+    mkCorner(favAllBtn, 6)
+
+    local unfavAllBtn = Instance.new("TextButton")
+    unfavAllBtn.Size = UDim2.new(0.5, -3, 1, 0); unfavAllBtn.BackgroundColor3 = Color3.fromRGB(75, 85, 99)
+    unfavAllBtn.Text = "❌ UNFAVORITE SEMUA"; unfavAllBtn.Font = Enum.Font.GothamBold; unfavAllBtn.TextSize = 10; unfavAllBtn.TextColor3 = Color3.new(1, 1, 1); unfavAllBtn.Parent = favQuickRow
+    mkCorner(unfavAllBtn, 6)
+
+    local favStatusLbl = mkLbl(favHead, "Pilih opsi di bawah untuk batch favorite / per item", 10.5, false, Theme.MUTED)
+    favStatusLbl.Position = UDim2.new(0, 0, 0, 56); favStatusLbl.Size = UDim2.new(1, 0, 0, 16); favStatusLbl.AutomaticSize = Enum.AutomaticSize.None
+
+    -- Filter Card (Height 175 untuk accommodate Below/Above Controls)
+    local favFilterCard = Instance.new("Frame")
+    favFilterCard.BackgroundColor3 = Theme.CARD; favFilterCard.Size = UDim2.new(1, 0, 0, 172); favFilterCard.LayoutOrder = 2; favFilterCard.Parent = parent
+    mkCorner(favFilterCard, 8); mkStroke(favFilterCard, Theme.BORDER, 1)
+    local ffPad = Instance.new("UIPadding"); ffPad.PaddingLeft = UDim.new(0, 10); ffPad.PaddingRight = UDim.new(0, 10); ffPad.PaddingTop = UDim.new(0, 8); ffPad.Parent = favFilterCard
+
+    local ffTitle = mkLbl(favFilterCard, "🍀 Filter Luck (Above/Below) & Ukuran", 12, true, Theme.TEXT)
+    ffTitle.Size = UDim2.new(1, 0, 0, 16); ffTitle.AutomaticSize = Enum.AutomaticSize.None
+
+    -- Row 1: Luck Filter Toggle & Operator (Above / Below)
+    local luckRow1 = Instance.new("Frame")
+    luckRow1.BackgroundTransparency = 1; luckRow1.Position = UDim2.new(0, 0, 0, 24); luckRow1.Size = UDim2.new(1, 0, 0, 26); luckRow1.Parent = favFilterCard
+    local lkList1 = Instance.new("UIListLayout"); lkList1.FillDirection = Enum.FillDirection.Horizontal; lkList1.Padding = UDim.new(0, 5); lkList1.Parent = luckRow1
+
+    local luckToggleBtn = Instance.new("TextButton")
+    luckToggleBtn.Size = UDim2.new(0.48, -3, 1, 0); luckToggleBtn.BackgroundColor3 = FavConfig.FilterLuckOnly and Color3.fromRGB(22, 163, 74) or Theme.PANEL
+    luckToggleBtn.Text = FavConfig.FilterLuckOnly and "🍀 HANYA LUCK: ON" or "🍀 HANYA LUCK: OFF"
+    luckToggleBtn.Font = Enum.Font.GothamBold; luckToggleBtn.TextSize = 9.5; luckToggleBtn.TextColor3 = Color3.new(1, 1, 1); luckToggleBtn.Parent = luckRow1
+    mkCorner(luckToggleBtn, 5); mkStroke(luckToggleBtn, Theme.BORDER, 1)
+
+    local opAboveBtn = Instance.new("TextButton")
+    opAboveBtn.Size = UDim2.new(0.26, -3, 1, 0); opAboveBtn.BackgroundColor3 = FavConfig.LuckOperator == "ABOVE" and Theme.SEL or Theme.PANEL
+    opAboveBtn.Text = "▲ Above (>=)"; opAboveBtn.Font = Enum.Font.GothamBold; opAboveBtn.TextSize = 9.5
+    opAboveBtn.TextColor3 = FavConfig.LuckOperator == "ABOVE" and Theme.TEXT or Theme.MUTED; opAboveBtn.Parent = luckRow1
+    mkCorner(opAboveBtn, 5); mkStroke(opAboveBtn, FavConfig.LuckOperator == "ABOVE" and Theme.ACCENT or Theme.BORDER, 1)
+
+    local opBelowBtn = Instance.new("TextButton")
+    opBelowBtn.Size = UDim2.new(0.26, -3, 1, 0); opBelowBtn.BackgroundColor3 = FavConfig.LuckOperator == "BELOW" and Theme.SEL or Theme.PANEL
+    opBelowBtn.Text = "▼ Below (<=)"; opBelowBtn.Font = Enum.Font.GothamBold; opBelowBtn.TextSize = 9.5
+    opBelowBtn.TextColor3 = FavConfig.LuckOperator == "BELOW" and Theme.TEXT or Theme.MUTED; opBelowBtn.Parent = luckRow1
+    mkCorner(opBelowBtn, 5); mkStroke(opBelowBtn, FavConfig.LuckOperator == "BELOW" and Theme.ACCENT or Theme.BORDER, 1)
+
+    local function refreshOperatorBtns()
+        opAboveBtn.BackgroundColor3 = FavConfig.LuckOperator == "ABOVE" and Theme.SEL or Theme.PANEL
+        opAboveBtn.TextColor3 = FavConfig.LuckOperator == "ABOVE" and Theme.TEXT or Theme.MUTED
+        local stA = opAboveBtn:FindFirstChildOfClass("UIStroke")
+        if stA then stA.Color = FavConfig.LuckOperator == "ABOVE" and Theme.ACCENT or Theme.BORDER end
+
+        opBelowBtn.BackgroundColor3 = FavConfig.LuckOperator == "BELOW" and Theme.SEL or Theme.PANEL
+        opBelowBtn.TextColor3 = FavConfig.LuckOperator == "BELOW" and Theme.TEXT or Theme.MUTED
+        local stB = opBelowBtn:FindFirstChildOfClass("UIStroke")
+        if stB then stB.Color = FavConfig.LuckOperator == "BELOW" and Theme.ACCENT or Theme.BORDER end
+    end
+
+    opAboveBtn.MouseButton1Click:Connect(function()
+        FavConfig.LuckOperator = "ABOVE"
+        refreshOperatorBtns()
+    end)
+
+    opBelowBtn.MouseButton1Click:Connect(function()
+        FavConfig.LuckOperator = "BELOW"
+        refreshOperatorBtns()
+    end)
+
+    -- Row 2: Target Luck Input
+    local luckInputBox = Instance.new("TextBox")
+    luckInputBox.Position = UDim2.new(0, 0, 0, 56); luckInputBox.Size = UDim2.new(1, 0, 0, 26); luckInputBox.BackgroundColor3 = Theme.PANEL
+    luckInputBox.PlaceholderText = "Target Nilai Luck (cth: 1M, 500k, 3.59M, 788906)..."; luckInputBox.PlaceholderColor3 = Theme.MUTED; luckInputBox.Text = FavConfig.LuckInputText
+    luckInputBox.Font = Enum.Font.Gotham; luckInputBox.TextSize = 10.5; luckInputBox.TextColor3 = Theme.TEXT; luckInputBox.ClearTextOnFocus = false; luckInputBox.Parent = favFilterCard
+    mkCorner(luckInputBox, 5); mkStroke(luckInputBox, Theme.BORDER, 1)
+
+    -- Row 3: Size Filter Row
+    local sizeRow = Instance.new("Frame")
+    sizeRow.BackgroundTransparency = 1; sizeRow.Position = UDim2.new(0, 0, 0, 88); sizeRow.Size = UDim2.new(1, 0, 0, 26); sizeRow.Parent = favFilterCard
+    local szList = Instance.new("UIListLayout"); szList.FillDirection = Enum.FillDirection.Horizontal; szList.Padding = UDim.new(0, 4); szList.Parent = sizeRow
+
+    local sizeButtons = {}
+    for _, sz in ipairs({ "ALL", "XL", "L", "M", "S" }) do
+        local sb = Instance.new("TextButton")
+        sb.Size = UDim2.new(0.2, -3, 1, 0); sb.BackgroundColor3 = FavConfig.TargetSize == sz and Theme.SEL or Theme.PANEL
+        sb.Text = sz == "ALL" and "Semua" or sz; sb.Font = Enum.Font.GothamBold; sb.TextSize = 10
+        sb.TextColor3 = FavConfig.TargetSize == sz and Theme.TEXT or Theme.MUTED; sb.Parent = sizeRow
+        mkCorner(sb, 5); mkStroke(sb, FavConfig.TargetSize == sz and Theme.ACCENT or Theme.BORDER, 1)
+        sizeButtons[sz] = sb
+
+        sb.MouseButton1Click:Connect(function()
+            FavConfig.TargetSize = sz
+            for k, btn in pairs(sizeButtons) do
+                local isCur = (k == sz)
+                btn.BackgroundColor3 = isCur and Theme.SEL or Theme.PANEL
+                btn.TextColor3 = isCur and Theme.TEXT or Theme.MUTED
+                local st = btn:FindFirstChildOfClass("UIStroke")
+                if st then st.Color = isCur and Theme.ACCENT or Theme.BORDER end
+            end
+        end)
+    end
+
+    -- Row 4: Action Buttons (Fav by Filter & Unfav by Filter)
+    local actionRow = Instance.new("Frame")
+    actionRow.BackgroundTransparency = 1; actionRow.Position = UDim2.new(0, 0, 0, 122); actionRow.Size = UDim2.new(1, 0, 0, 34); actionRow.Parent = favFilterCard
+    local actList = Instance.new("UIListLayout"); actList.FillDirection = Enum.FillDirection.Horizontal; actList.Padding = UDim.new(0, 6); actList.Parent = actionRow
+
+    local batchFavFilterBtn = Instance.new("TextButton")
+    batchFavFilterBtn.Size = UDim2.new(0.5, -3, 1, 0); batchFavFilterBtn.BackgroundColor3 = Color3.fromRGB(161, 98, 7)
+    batchFavFilterBtn.Text = "⭐ FAV BY FILTER"; batchFavFilterBtn.Font = Enum.Font.GothamBold; batchFavFilterBtn.TextSize = 10.5; batchFavFilterBtn.TextColor3 = Color3.new(1, 1, 1); batchFavFilterBtn.Parent = actionRow
+    mkCorner(batchFavFilterBtn, 6)
+
+    local batchUnfavFilterBtn = Instance.new("TextButton")
+    batchUnfavFilterBtn.Size = UDim2.new(0.5, -3, 1, 0); batchUnfavFilterBtn.BackgroundColor3 = Color3.fromRGB(55, 65, 81)
+    batchUnfavFilterBtn.Text = "❌ UNFAV BY FILTER"; batchUnfavFilterBtn.Font = Enum.Font.GothamBold; batchUnfavFilterBtn.TextSize = 10.5; batchUnfavFilterBtn.TextColor3 = Color3.new(1, 1, 1); batchUnfavFilterBtn.Parent = actionRow
+    mkCorner(batchUnfavFilterBtn, 6)
+
+    luckToggleBtn.MouseButton1Click:Connect(function()
+        FavConfig.FilterLuckOnly = not FavConfig.FilterLuckOnly
+        luckToggleBtn.BackgroundColor3 = FavConfig.FilterLuckOnly and Color3.fromRGB(22, 163, 74) or Theme.PANEL
+        luckToggleBtn.Text = FavConfig.FilterLuckOnly and "🍀 HANYA LUCK: ON" or "🍀 HANYA LUCK: OFF"
+    end)
+
+    luckInputBox:GetPropertyChangedSignal("Text"):Connect(function()
+        FavConfig.LuckInputText = luckInputBox.Text
+        FavConfig.LuckTargetRaw = parseSuffixNumber(luckInputBox.Text)
+    end)
+
+    -- Item List
+    local favListSec = Instance.new("Frame")
+    favListSec.BackgroundColor3 = Theme.CARD; favListSec.Size = UDim2.new(1, 0, 0, 260); favListSec.LayoutOrder = 3; favListSec.Parent = parent
+    mkCorner(favListSec, 8); mkStroke(favListSec, Theme.BORDER, 1)
+    local flPad = Instance.new("UIPadding"); flPad.PaddingLeft = UDim.new(0, 10); flPad.PaddingRight = UDim.new(0, 10); flPad.PaddingTop = UDim.new(0, 8); flPad.Parent = favListSec
+
+    local favListTitleRow = Instance.new("Frame"); favListTitleRow.BackgroundTransparency = 1; favListTitleRow.Size = UDim2.new(1, 0, 0, 20); favListTitleRow.Parent = favListSec
+    local flTitle = mkLbl(favListTitleRow, "📋 Daftar Item Tas & Status Favorite", 12, true, Theme.TEXT)
+    flTitle.Size = UDim2.new(1, -70, 1, 0); flTitle.AutomaticSize = Enum.AutomaticSize.None
+
+    local refreshFavListBtn = Instance.new("TextButton")
+    refreshFavListBtn.Size = UDim2.new(0, 65, 1, 0); refreshFavListBtn.Position = UDim2.new(1, -65, 0, 0)
+    refreshFavListBtn.BackgroundColor3 = Theme.PANEL; refreshFavListBtn.Text = "🔄 Refresh"; refreshFavListBtn.Font = Enum.Font.GothamBold; refreshFavListBtn.TextSize = 10
+    refreshFavListBtn.TextColor3 = Theme.ACC_FAV; refreshFavListBtn.Parent = favListTitleRow
+    mkCorner(refreshFavListBtn, 5); mkStroke(refreshFavListBtn, Theme.BORDER, 1)
+
+    local favSearchBox = Instance.new("TextBox")
+    favSearchBox.Position = UDim2.new(0, 0, 0, 26); favSearchBox.Size = UDim2.new(1, 0, 0, 26); favSearchBox.BackgroundColor3 = Theme.PANEL
+    favSearchBox.PlaceholderText = "🔍 Cari crystal / luck (cth: Terminus, 3.59M, XL)..."; favSearchBox.PlaceholderColor3 = Theme.MUTED; favSearchBox.Text = ""
+    favSearchBox.Font = Enum.Font.Gotham; favSearchBox.TextSize = 11; favSearchBox.TextColor3 = Theme.TEXT; favSearchBox.ClearTextOnFocus = false; favSearchBox.Parent = favListSec
+    mkCorner(favSearchBox, 6); mkStroke(favSearchBox, Theme.BORDER, 1)
+
+    local favScroll = Instance.new("ScrollingFrame")
+    favScroll.Position = UDim2.new(0, 0, 0, 58); favScroll.Size = UDim2.new(1, 0, 1, -64); favScroll.BackgroundTransparency = 1
+    favScroll.ScrollBarThickness = 3; favScroll.ScrollBarImageColor3 = Theme.ACC_FAV; favScroll.BorderSizePixel = 0; favScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    favScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y; favScroll.Parent = favListSec
+    local favScrollLay = Instance.new("UIListLayout"); favScrollLay.Padding = UDim.new(0, 4); favScrollLay.SortOrder = Enum.SortOrder.LayoutOrder; favScrollLay.Parent = favScroll
+
+    local function renderFavPageList()
+        local inv = scanBackpack()
+        local searchQ = favSearchBox.Text:gsub("^%s+", ""):gsub("%s+$", ""):lower()
+
+        for _, ch in ipairs(favScroll:GetChildren()) do
+            if ch:IsA("Frame") then ch:Destroy() end
+        end
+
+        local count = 0
+        for i, itemData in ipairs(inv.List) do
+            local matchesText = (searchQ == "") or itemData.Name:lower():find(searchQ, 1, true) or itemData.Rarity:lower():find(searchQ, 1, true) or itemData.Size:lower():find(searchQ, 1, true) or itemData.LuckDisplay:lower():find(searchQ, 1, true)
+            if matchesText then
+                count = count + 1
+                local row = Instance.new("Frame")
+                row.Size = UDim2.new(1, 0, 0, 30); row.BackgroundColor3 = Theme.PANEL; row.LayoutOrder = i; row.Parent = favScroll
+                mkCorner(row, 5)
+
+                local rBadge = Instance.new("Frame")
+                rBadge.Size = UDim2.new(0, 64, 1, -4); rBadge.Position = UDim2.new(0, 2, 0, 2); rBadge.BackgroundColor3 = Theme.CARD; rBadge.Parent = row
+                mkCorner(rBadge, 4)
+
+                local rBadgeLbl = mkLbl(rBadge, itemData.Rarity, 8.5, true, RarityColors[itemData.Rarity] or Theme.TEXT, Enum.TextXAlignment.Center)
+                rBadgeLbl.Size = UDim2.new(1, 0, 1, 0); rBadgeLbl.AutomaticSize = Enum.AutomaticSize.None
+
+                local nameStr = itemData.Name
+                if itemData.Size ~= "NORMAL" and itemData.Size ~= "" then nameStr = "[" .. itemData.Size .. "] " .. nameStr end
+                if itemData.HasLuck then nameStr = nameStr .. string.format(" 🍀[%s]", itemData.LuckDisplay) end
+
+                local nameLbl = mkLbl(row, nameStr, 10, false, itemData.HasLuck and Color3.fromRGB(253, 224, 71) or Theme.TEXT)
+                nameLbl.Position = UDim2.new(0, 70, 0, 0); nameLbl.Size = UDim2.new(1, -165, 1, 0); nameLbl.TextTruncate = Enum.TextTruncate.AtEnd; nameLbl.AutomaticSize = Enum.AutomaticSize.None
+
+                local countLbl = mkLbl(row, "x" .. tostring(itemData.Count), 10, true, Color3.fromRGB(74, 222, 128), Enum.TextXAlignment.Right)
+                countLbl.Position = UDim2.new(1, -92, 0, 0); countLbl.Size = UDim2.new(0, 28, 1, 0); countLbl.AutomaticSize = Enum.AutomaticSize.None
+
+                local actionBtn = Instance.new("TextButton")
+                actionBtn.Size = UDim2.new(0, 58, 1, -4); actionBtn.Position = UDim2.new(1, -62, 0, 2)
+                actionBtn.BackgroundColor3 = itemData.IsFavorite and Color3.fromRGB(75, 85, 99) or Color3.fromRGB(161, 98, 7)
+                actionBtn.Text = itemData.IsFavorite and "❌ Unfav" or "⭐ Fav"
+                actionBtn.Font = Enum.Font.GothamBold; actionBtn.TextSize = 9.5; actionBtn.TextColor3 = Color3.new(1, 1, 1); actionBtn.Parent = row
+                mkCorner(actionBtn, 4)
+
+                actionBtn.MouseButton1Click:Connect(function()
+                    local newFavState = not itemData.IsFavorite
+                    itemData.IsFavorite = newFavState
+                    for _, singleItem in ipairs(itemData.Items) do
+                        toggleItemFavoriteRemote(singleItem.Instance, newFavState)
+                    end
+                    renderFavPageList()
+                end)
+            end
+        end
+
+        if count == 0 then
+            local emptyLbl = mkLbl(favScroll, searchQ == "" and "Tidak ada item di tas." or "Tidak ada crystal yang cocok dengan filter.", 11, false, Theme.MUTED, Enum.TextXAlignment.Center)
+            emptyLbl.Size = UDim2.new(1, 0, 0, 30); emptyLbl.AutomaticSize = Enum.AutomaticSize.None
+        end
+    end
+
+    refreshFavListBtn.MouseButton1Click:Connect(renderFavPageList)
+    favSearchBox:GetPropertyChangedSignal("Text"):Connect(renderFavPageList)
+    UI.RenderFavPage = renderFavPageList
+
+    local function runBatchFavorite(targetFavState, applyFilter)
+        if FavConfig.IsProcessing then return end
+        FavConfig.IsProcessing = true
+        favStatusLbl.Text = string.format("Memproses %s...", targetFavState and "Favorite" or "Unfavorite")
+        favStatusLbl.TextColor3 = Theme.ACC_FAV
+
+        task.spawn(function()
+            local inv = scanBackpack()
+            local processed = 0
+            for _, item in ipairs(inv.RawItems) do
+                local pass = true
+                if applyFilter then
+                    if FavConfig.FilterLuckOnly and not item.HasLuck then pass = false end
+                    
+                    if FavConfig.LuckTargetRaw > 0 then
+                        if FavConfig.LuckOperator == "ABOVE" then
+                            if item.Luck < FavConfig.LuckTargetRaw then pass = false end
+                        elseif FavConfig.LuckOperator == "BELOW" then
+                            if item.Luck > FavConfig.LuckTargetRaw then pass = false end
+                        end
+                    end
+
+                    if FavConfig.TargetSize ~= "ALL" and item.Size ~= FavConfig.TargetSize then pass = false end
+                end
+
+                if pass then
+                    toggleItemFavoriteRemote(item.Instance, targetFavState)
+                    processed = processed + 1
+                    task.wait(0.01)
+                end
+            end
+
+            favStatusLbl.Text = string.format("Selesai! %d item berhasil di-%s.", processed, targetFavState and "Favoritkan" or "Unfavoritkan")
+            favStatusLbl.TextColor3 = Color3.fromRGB(74, 222, 128)
+            FavConfig.IsProcessing = false
+            renderFavPageList()
+        end)
+    end
+
+    favAllBtn.MouseButton1Click:Connect(function() runBatchFavorite(true, false) end)
+    unfavAllBtn.MouseButton1Click:Connect(function() runBatchFavorite(false, false) end)
+    batchFavFilterBtn.MouseButton1Click:Connect(function() runBatchFavorite(true, true) end)
+    batchUnfavFilterBtn.MouseButton1Click:Connect(function() runBatchFavorite(false, true) end)
+end
+
+local function buildPlayerPage(parent)
+    local wsSec = Instance.new("Frame")
+    wsSec.BackgroundColor3 = Theme.CARD; wsSec.Size = UDim2.new(1, 0, 0, 115); wsSec.LayoutOrder = 1; wsSec.Parent = parent
+    mkCorner(wsSec, 8); mkStroke(wsSec, Theme.BORDER, 1)
+    local wsPad = Instance.new("UIPadding"); wsPad.PaddingLeft = UDim.new(0, 10); wsPad.PaddingRight = UDim.new(0, 10); wsPad.PaddingTop = UDim.new(0, 8); wsPad.Parent = wsSec
+
+    local wsHeader = Instance.new("Frame"); wsHeader.BackgroundTransparency = 1; wsHeader.Size = UDim2.new(1, 0, 0, 22); wsHeader.Parent = wsSec
+    local wsTitle = mkLbl(wsHeader, "🏃 WalkSpeed (Kecepatan Lari)", 12, true, Theme.TEXT)
+    wsTitle.Size = UDim2.new(1, -95, 1, 0); wsTitle.AutomaticSize = Enum.AutomaticSize.None
+
+    local wsToggleBtn = Instance.new("TextButton")
+    wsToggleBtn.Size = UDim2.new(0, 90, 1, 0); wsToggleBtn.Position = UDim2.new(1, -90, 0, 0)
+    wsToggleBtn.BackgroundColor3 = PlayerConfig.WalkSpeedEnabled and Theme.GREEN or Theme.PANEL
+    wsToggleBtn.Text = PlayerConfig.WalkSpeedEnabled and "SPEED: ON" or "SPEED: OFF"
+    wsToggleBtn.Font = Enum.Font.GothamBold; wsToggleBtn.TextSize = 10; wsToggleBtn.TextColor3 = Color3.new(1, 1, 1); wsToggleBtn.Parent = wsHeader
+    mkCorner(wsToggleBtn, 5); mkStroke(wsToggleBtn, Theme.BORDER, 1)
+
+    local wsInfoLbl = mkLbl(wsSec, "Kecepatan saat ini: " .. tostring(PlayerConfig.WalkSpeedValue), 11, false, Theme.MUTED)
+    wsInfoLbl.Position = UDim2.new(0, 0, 0, 26); wsInfoLbl.Size = UDim2.new(1, 0, 0, 16); wsInfoLbl.AutomaticSize = Enum.AutomaticSize.None
+
+    local wsBtnRow = Instance.new("Frame")
+    wsBtnRow.BackgroundTransparency = 1; wsBtnRow.Position = UDim2.new(0, 0, 0, 48); wsBtnRow.Size = UDim2.new(1, 0, 0, 26); wsBtnRow.Parent = wsSec
+    local wsList = Instance.new("UIListLayout"); wsList.FillDirection = Enum.FillDirection.Horizontal; wsList.Padding = UDim.new(0, 4); wsList.Parent = wsBtnRow
+
+    local wsCustomInput = Instance.new("TextBox")
+    wsCustomInput.Position = UDim2.new(0, 0, 0, 78); wsCustomInput.Size = UDim2.new(1, 0, 0, 26); wsCustomInput.BackgroundColor3 = Theme.PANEL
+    wsCustomInput.PlaceholderText = "Ketik kecepatan kustom (cth: 150)..."; wsCustomInput.PlaceholderColor3 = Theme.MUTED; wsCustomInput.Text = tostring(PlayerConfig.WalkSpeedValue)
+    wsCustomInput.Font = Enum.Font.Gotham; wsCustomInput.TextSize = 11; wsCustomInput.TextColor3 = Theme.TEXT; wsCustomInput.ClearTextOnFocus = false; wsCustomInput.Parent = wsSec
+    mkCorner(wsCustomInput, 5); mkStroke(wsCustomInput, Theme.BORDER, 1)
+
+    local function refreshWsBtns()
+        wsToggleBtn.BackgroundColor3 = PlayerConfig.WalkSpeedEnabled and Theme.GREEN or Theme.PANEL
+        wsToggleBtn.Text = PlayerConfig.WalkSpeedEnabled and "SPEED: ON" or "SPEED: OFF"
+        wsInfoLbl.Text = string.format("Kecepatan: %d %s", PlayerConfig.WalkSpeedValue, PlayerConfig.WalkSpeedEnabled and "(Aktif)" or "(Nonaktif)")
+        for _, ch in ipairs(wsBtnRow:GetChildren()) do
+            if ch:IsA("TextButton") then
+                local isCur = (ch.Text == tostring(PlayerConfig.WalkSpeedValue))
+                ch.BackgroundColor3 = isCur and Theme.SEL or Theme.PANEL
+                ch.TextColor3 = isCur and Theme.TEXT or Theme.MUTED
+                local st = ch:FindFirstChildOfClass("UIStroke")
+                if st then st.Color = isCur and Theme.ACCENT or Theme.BORDER end
+            end
+        end
+    end
+
+    wsToggleBtn.MouseButton1Click:Connect(function()
+        PlayerConfig.WalkSpeedEnabled = not PlayerConfig.WalkSpeedEnabled
+        if not PlayerConfig.WalkSpeedEnabled and LocalPlayer.Character then
+            local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if hum then hum.WalkSpeed = PlayerConfig.DefaultWalkSpeed end
+        end
+        refreshWsBtns()
+    end)
+
+    for _, wsVal in ipairs({ 16, 35, 60, 100, 200 }) do
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(0.2, -4, 1, 0); b.BackgroundColor3 = PlayerConfig.WalkSpeedValue == wsVal and Theme.SEL or Theme.PANEL
+        b.Text = tostring(wsVal); b.Font = Enum.Font.GothamBold; b.TextSize = 10
+        b.TextColor3 = PlayerConfig.WalkSpeedValue == wsVal and Theme.TEXT or Theme.MUTED; b.Parent = wsBtnRow
+        mkCorner(b, 5); mkStroke(b, PlayerConfig.WalkSpeedValue == wsVal and Theme.ACCENT or Theme.BORDER, 1)
+
+        b.MouseButton1Click:Connect(function()
+            PlayerConfig.WalkSpeedValue = wsVal
+            wsCustomInput.Text = tostring(wsVal)
+            refreshWsBtns()
+        end)
+    end
+
+    wsCustomInput:GetPropertyChangedSignal("Text"):Connect(function()
+        local n = tonumber(wsCustomInput.Text)
+        if n and n > 0 then PlayerConfig.WalkSpeedValue = math.floor(n); refreshWsBtns() end
+    end)
+
+    -- Fly Section
+    local flySec = Instance.new("Frame")
+    flySec.BackgroundColor3 = Theme.CARD; flySec.Size = UDim2.new(1, 0, 0, 150); flySec.LayoutOrder = 2; flySec.Parent = parent
+    mkCorner(flySec, 8); mkStroke(flySec, Theme.BORDER, 1)
+    local flyPad = Instance.new("UIPadding"); flyPad.PaddingLeft = UDim.new(0, 10); flyPad.PaddingRight = UDim.new(0, 10); flyPad.PaddingTop = UDim.new(0, 8); flyPad.Parent = flySec
+
+    local flyHeader = Instance.new("Frame"); flyHeader.BackgroundTransparency = 1; flyHeader.Size = UDim2.new(1, 0, 0, 22); flyHeader.Parent = flySec
+    local flyTitle = mkLbl(flyHeader, "🕊️ FlyHigh (Terbang Bebas)", 12, true, Theme.TEXT)
+    flyTitle.Size = UDim2.new(1, -95, 1, 0); flyTitle.AutomaticSize = Enum.AutomaticSize.None
+
+    local flyToggleBtn = Instance.new("TextButton")
+    flyToggleBtn.Size = UDim2.new(0, 90, 1, 0); flyToggleBtn.Position = UDim2.new(1, -90, 0, 0)
+    flyToggleBtn.BackgroundColor3 = PlayerConfig.FlyEnabled and Theme.GREEN or Theme.PANEL
+    flyToggleBtn.Text = PlayerConfig.FlyEnabled and "FLY: ON" or "FLY: OFF"
+    flyToggleBtn.Font = Enum.Font.GothamBold; flyToggleBtn.TextSize = 10; flyToggleBtn.TextColor3 = Color3.new(1, 1, 1); flyToggleBtn.Parent = flyHeader
+    mkCorner(flyToggleBtn, 5); mkStroke(flyToggleBtn, Theme.BORDER, 1)
+
+    local flyCtrlLbl = mkLbl(flySec, "Kontrol: W,A,S,D (Gerak) | Space (Naik) | Shift/Ctrl (Turun)", 10, false, Theme.MUTED)
+    flyCtrlLbl.Position = UDim2.new(0, 0, 0, 26); flyCtrlLbl.Size = UDim2.new(1, 0, 0, 14); flyCtrlLbl.AutomaticSize = Enum.AutomaticSize.None
+
+    local flyInfoLbl = mkLbl(flySec, "Kecepatan Fly: " .. tostring(PlayerConfig.FlySpeed), 11, true, Color3.fromRGB(90, 210, 255))
+    flyInfoLbl.Position = UDim2.new(0, 0, 0, 44); flyInfoLbl.Size = UDim2.new(1, 0, 0, 16); flyInfoLbl.AutomaticSize = Enum.AutomaticSize.None
+
+    local flyBtnRow = Instance.new("Frame")
+    flyBtnRow.BackgroundTransparency = 1; flyBtnRow.Position = UDim2.new(0, 0, 0, 66); flyBtnRow.Size = UDim2.new(1, 0, 0, 26); flyBtnRow.Parent = flySec
+    local flyList = Instance.new("UIListLayout"); flyList.FillDirection = Enum.FillDirection.Horizontal; flyList.Padding = UDim.new(0, 4); flyList.Parent = flyBtnRow
+
+    local flyCustomInput = Instance.new("TextBox")
+    flyCustomInput.Position = UDim2.new(0, 0, 0, 98); flyCustomInput.Size = UDim2.new(1, 0, 0, 26); flyCustomInput.BackgroundColor3 = Theme.PANEL
+    flyCustomInput.PlaceholderText = "Ketik kecepatan fly kustom (cth: 120)..."; flyCustomInput.PlaceholderColor3 = Theme.MUTED; flyCustomInput.Text = tostring(PlayerConfig.FlySpeed)
+    flyCustomInput.Font = Enum.Font.Gotham; flyCustomInput.TextSize = 11; flyCustomInput.TextColor3 = Theme.TEXT; flyCustomInput.ClearTextOnFocus = false; flyCustomInput.Parent = flySec
+    mkCorner(flyCustomInput, 5); mkStroke(flyCustomInput, Theme.BORDER, 1)
+
+    local function refreshFlyBtns()
+        flyToggleBtn.BackgroundColor3 = PlayerConfig.FlyEnabled and Theme.GREEN or Theme.PANEL
+        flyToggleBtn.Text = PlayerConfig.FlyEnabled and "FLY: ON" or "FLY: OFF"
+        flyInfoLbl.Text = string.format("Kecepatan Fly: %d %s", PlayerConfig.FlySpeed, PlayerConfig.FlyEnabled and "(Aktif)" or "(Nonaktif)")
+        for _, ch in ipairs(flyBtnRow:GetChildren()) do
+            if ch:IsA("TextButton") then
+                local isCur = (ch.Text == tostring(PlayerConfig.FlySpeed))
+                ch.BackgroundColor3 = isCur and Theme.SEL or Theme.PANEL
+                ch.TextColor3 = isCur and Theme.TEXT or Theme.MUTED
+                local st = ch:FindFirstChildOfClass("UIStroke")
+                if st then st.Color = isCur and Theme.ACCENT or Theme.BORDER end
+            end
+        end
+    end
+
+    flyToggleBtn.MouseButton1Click:Connect(function()
+        PlayerConfig.FlyEnabled = not PlayerConfig.FlyEnabled
+        if PlayerConfig.FlyEnabled then startFly() else stopFly() end
+        refreshFlyBtns()
+    end)
+
+    for _, flyVal in ipairs({ 25, 50, 80, 120, 200 }) do
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(0.2, -4, 1, 0); b.BackgroundColor3 = PlayerConfig.FlySpeed == flyVal and Theme.SEL or Theme.PANEL
+        b.Text = tostring(flyVal); b.Font = Enum.Font.GothamBold; b.TextSize = 10
+        b.TextColor3 = PlayerConfig.FlySpeed == flyVal and Theme.TEXT or Theme.MUTED; b.Parent = flyBtnRow
+        mkCorner(b, 5); mkStroke(b, PlayerConfig.FlySpeed == flyVal and Theme.ACCENT or Theme.BORDER, 1)
+
+        b.MouseButton1Click:Connect(function()
+            PlayerConfig.FlySpeed = flyVal
+            flyCustomInput.Text = tostring(flyVal)
+            refreshFlyBtns()
+        end)
+    end
+
+    flyCustomInput:GetPropertyChangedSignal("Text"):Connect(function()
+        local n = tonumber(flyCustomInput.Text)
+        if n and n > 0 then PlayerConfig.FlySpeed = math.floor(n); refreshFlyBtns() end
+    end)
+end
+
+-- ============================================================
+--  INITIALIZE PAGES & EVENT BINDINGS
+-- ============================================================
+buildCollectorPage(UI.Pages[1])
+buildTrackPage(UI.Pages[2])
+buildDupePage(UI.Pages[3])
+buildFavPage(UI.Pages[4])
+buildPlayerPage(UI.Pages[5])
+
+local function bindBackpackEvents()
+    local bp = LocalPlayer:FindFirstChild("Backpack")
+    if bp then
+        bp.ChildAdded:Connect(function() 
+            task.wait(0.1)
+            if UI.RenderBackpack and UI.Pages[2].Visible then UI.RenderBackpack() end
+            if UI.RenderFavPage and UI.Pages[4].Visible then UI.RenderFavPage() end
+        end)
+        bp.ChildRemoved:Connect(function() 
+            task.wait(0.1)
+            if UI.RenderBackpack and UI.Pages[2].Visible then UI.RenderBackpack() end
+            if UI.RenderFavPage and UI.Pages[4].Visible then UI.RenderFavPage() end
+        end)
+    end
+end
+bindBackpackEvents()
+
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(1)
+    if PlayerConfig.FlyEnabled then startFly() end
+    bindBackpackEvents()
+end)
+
+-- Minimize Logic
+local isMin = false
+UI.MinBtn.MouseButton1Click:Connect(function()
+    isMin = not isMin
+    if isMin then
+        TweenService:Create(Main, TweenInfo.new(0.2), { Size = UDim2.new(0, 420, 0, 46) }):Play()
+        TabNav.Visible = false
+        for _, p in ipairs(UI.Pages) do p.Visible = false end
+        UI.MinBtn.Text = "+"
+    else
+        TabNav.Visible = true
+        local cur = 1
+        for i, p in ipairs(UI.Pages) do if p.Visible then cur = i; break end end
+        switchTab(cur)
+        TweenService:Create(Main, TweenInfo.new(0.2), { Size = UDim2.new(0, 420, 0, 600) }):Play()
+        UI.MinBtn.Text = "−"
+    end
+end)
+
+task.defer(function()
+    if UI.RenderBackpack then UI.RenderBackpack() end
+    if UI.RenderFavPage then UI.RenderFavPage() end
+end)
+
+print("[AHH CROTT - Multi-Tool v2.3] Berhasil dimuat dengan Filter Above & Below Luck!")
