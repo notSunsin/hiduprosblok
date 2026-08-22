@@ -1,0 +1,61 @@
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- Setting langsung aktif (True)
+local ProfileSettings = {
+    NoDamageActive = true,
+    NoRagdollActive = true,
+}
+
+-- Heartbeat Loop: No Damage & Fall Dampening
+RunService.Heartbeat:Connect(function()
+    if ProfileSettings.NoDamageActive then
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum and hum.Health > 0 then
+            -- Always restore health to max when No Damage is active
+            -- This prevents damage from accumulating faster than healing
+            hum.Health = hum.MaxHealth
+        end
+    end
+    
+    -- Auto fall dampening when No Ragdoll is enabled
+    if ProfileSettings.NoRagdollActive then
+        local char = LocalPlayer.Character
+        local rootPart = char and char:FindFirstChild("HumanoidRootPart")
+        if rootPart then
+            local velocity = rootPart.Velocity
+            
+            -- Check if falling (negative Y velocity)
+            if velocity.Y < 0 then
+                -- Raycast downward to find ground
+                local rayOrigin = rootPart.Position
+                local rayDirection = Vector3.new(0, -1, 0)
+                local raycastParams = RaycastParams.new()
+                raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+                raycastParams.FilterDescendantsInstances = {char}
+                
+                local rayResult = Workspace:Raycast(rayOrigin, rayDirection * 500, raycastParams)
+                
+                if rayResult then
+                    local distanceToGround = (rayResult.Position - rayOrigin).Magnitude
+                    local safeDistance = 15  -- Safe fall distance to avoid damage/ragdoll
+                    
+                    -- If close to ground, dampen the fall speed
+                    if distanceToGround < safeDistance then
+                        -- Slow down smoothly as you approach ground
+                        local slowFactor = math.max(0.1, distanceToGround / safeDistance)
+                        local dampedYVelocity = velocity.Y * slowFactor
+                        rootPart.Velocity = Vector3.new(velocity.X, dampedYVelocity, velocity.Z)
+                    end
+                end
+            end
+        end
+    end
+end)
+
+print("[MAMO] Standalone No Damage & No Ragdoll Active!")
